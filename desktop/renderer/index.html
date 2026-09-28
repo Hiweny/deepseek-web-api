@@ -8,6 +8,7 @@
 </head>
 <body>
   <div id="app">
+    <div id="banner" class="banner hidden"></div>
     <main id="viewport">
       <section id="panel-control" class="panel active">
         <div class="scroll">
@@ -42,15 +43,25 @@
           <div class="card">
             <div class="card-title">操作</div>
             <div class="row">
-              <button class="btn" data-action="reload">重载网页</button>
+              <button class="btn" data-action="reload">重载官网</button>
               <button class="btn" data-action="newChat">新建对话</button>
             </div>
             <div class="row">
-              <button class="btn" data-action="openSite">打开官网</button>
-              <button class="btn" data-action="openDevtools">开发者工具</button>
+              <button class="btn" data-action="openSite">浏览器打开官网</button>
+              <button class="btn" data-action="clearLog">清空调试日志</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">诊断</div>
+            <div class="line"><span>Electron</span><b id="st-ver">—</b></div>
+            <div class="line"><span>官网地址</span><b id="st-dsurl" class="mono">—</b></div>
+            <div class="row">
+              <button class="btn" data-action="openLog">打开日志文件</button>
+              <button class="btn" data-action="openDsDevtools">官网调试</button>
             </div>
             <div class="row">
-              <button class="btn" data-action="clearLog">清空调试日志</button>
+              <button class="btn" data-action="openAppDevtools">界面调试</button>
             </div>
           </div>
 
@@ -58,12 +69,16 @@
             <div class="card-title">运行日志</div>
             <pre id="log"></pre>
           </div>
-          <div class="footer">v<span id="ver">—</span> · 仅本机使用，请遵守 DeepSeek 服务条款</div>
+          <div class="footer">仅本机使用 · 请遵守 DeepSeek 服务条款</div>
         </div>
       </section>
 
       <section id="panel-web" class="panel">
-        <webview id="dsView" src="about:blank"></webview>
+        <div class="placeholder">
+          <div class="ph-emoji">💬</div>
+          <div>DeepSeek 官网页面</div>
+          <div class="ph-hint" id="ph-hint">正在加载…（若长时间空白，请点控制台的「重载官网」）</div>
+        </div>
       </section>
     </main>
 
