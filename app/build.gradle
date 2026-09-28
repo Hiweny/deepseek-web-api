@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 可选发布签名：工程根目录放 keystore.properties（storeFile/storePassword/keyAlias/keyPassword）。
+// CI 用 GitHub Secrets 注入；缺失时回退 debug 签名，保证 assembleRelease 一定能出包。
+def keystorePropsFile = rootProject.file("keystore.properties")
+def hasReleaseKeystore = keystorePropsFile.exists()
+Properties keystoreProps = new Properties()
+if (hasReleaseKeystore) {
+    keystoreProps.load(new FileInputStream(keystorePropsFile))
+}
+
+android {
+    namespace 'com.hiweny.dswebapi'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.hiweny.dswebapi"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+        vectorDrawables.useSupportLibrary = false
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseKeystore) {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig hasReleaseKeystore ? signingConfigs.release : signingConfigs.debug
+        }
+        debug {
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+// 纯原生 Android，无第三方运行时依赖（HTTP 服务自实现，避免额外体积与冲突）。
+dependencies {
+}

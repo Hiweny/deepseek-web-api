@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DeepSeek Web API</string>
+    <string name="accessibility_desc">用于在后台保持 DeepSeek API 桥服务运行：当服务被系统回收或卡死时自动重新拉起，保障本机 HTTP 接口持续可用。不会读取、收集或上传任何屏幕内容与个人信息。</string>
+</resources>
