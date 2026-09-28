@@ -160,7 +160,7 @@ public class ApiService extends Service {
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         chatExec.shutdownNow();
         pingExec.shutdownNow();
-        if (intentional) KeepAlive.cancelHeartbeat(this);
+        if (intentional) { KeepAlive.cancelHeartbeat(this); WebHost.destroy(); }
         else KeepAlive.scheduleServiceRestart(this, 3000L);
         Util.log("ApiService 已销毁");
         super.onDestroy();

@@ -658,8 +658,8 @@
     probe: function () {
       var hasInput = !!findInput();
       var hasFileInput = listFileInputs().length > 0;
-      var loggedIn = location.href.indexOf('sign_in') === -1;
-      try { loggedIn = loggedIn && document.cookie.indexOf('userToken') !== -1; } catch (e) {}
+      // 只要不在登录页且输入框存在，即视为已登录（不依赖具体 cookie 名）
+      var loggedIn = location.href.indexOf('sign_in') === -1 && location.href.indexOf('login') === -1 && hasInput;
       emit({
         type: 'probe', url: location.href, loggedIn: loggedIn,
         hasInput: hasInput, hasFileInput: hasFileInput,

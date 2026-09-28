@@ -119,6 +119,23 @@ public final class WebHost {
 
     public static void injectBridge() { DeepSeekController.get().injectBridge(); }
 
+    /** 彻底销毁（仅在用户主动停止服务时调用）。 */
+    public static void destroy() {
+        final WebView wv = sWebView;
+        sWebView = null;
+        sPageLoaded = false;
+        if (wv == null) return;
+        runOnMain(() -> {
+            try {
+                ViewGroup p = (ViewGroup) wv.getParent();
+                if (p != null) p.removeView(wv);
+                wv.stopLoading();
+                wv.destroy();
+                Util.log("WebView 已销毁");
+            } catch (Throwable ignored) {}
+        });
+    }
+
     /* ================= 内部 ================= */
 
     private static void configure(WebView wv) {
