@@ -42,11 +42,11 @@ public class ApiService extends Service {
     private final ExecutorService chatExec = Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService pingExec = Executors.newScheduledThreadPool(2);
     private final Handler watchdog = new Handler(Looper.getMainLooper());
-    private final AtomicInteger inflight = new AtomicInteger(0);
-    private final AtomicInteger totalCalls = new AtomicInteger(0);
-    private final AtomicInteger okCalls = new AtomicInteger(0);
-    private volatile String lastCallInfo = "—";
-    private volatile boolean lastProbeLoggedIn = false, lastProbeReady = false;
+    private static final AtomicInteger inflight = new AtomicInteger(0);
+    private static final AtomicInteger totalCalls = new AtomicInteger(0);
+    private static final AtomicInteger okCalls = new AtomicInteger(0);
+    private static volatile String lastCallInfo = "—";
+    private static volatile boolean lastProbeLoggedIn = false, lastProbeReady = false;
 
     public static void start(Context ctx) {
         Intent i = new Intent(ctx, ApiService.class).setAction(ACTION_START);

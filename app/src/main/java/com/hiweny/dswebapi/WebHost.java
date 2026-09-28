@@ -124,7 +124,7 @@ public final class WebHost {
     private static void configure(WebView wv) {
         try {
             if (Build.VERSION.SDK_INT >= 26) {
-                WebView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+                wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
             }
         } catch (Throwable ignored) {}
         WebSettings s = wv.getSettings();
