@@ -1,0 +1,55 @@
+{
+  "name": "deepseek-web-api-desktop",
+  "productName": "DeepSeek Web API",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible API bridge over chat.deepseek.com - Windows desktop (Electron)",
+  "author": "Hiweny",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/logic-test.js",
+    "dist": "electron-builder --win portable nsis",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "31.7.7",
+    "electron-builder": "24.13.3"
+  },
+  "build": {
+    "appId": "com.hiweny.dswebapi.desktop",
+    "productName": "DeepSeekWebAPI",
+    "asar": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "preload-host.js",
+      "preload-guest.js",
+      "renderer/**/*",
+      "src/**/*",
+      "assets/bridge.js",
+      "assets/icon.png",
+      "!test/**"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        { "target": "portable", "arch": ["x64"] },
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "portable": {
+      "artifactName": "DeepSeekWebAPI-Portable-${version}.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "DeepSeekWebAPI-Setup-${version}.exe",
+      "shortcutName": "DeepSeek Web API"
+    }
+  }
+}

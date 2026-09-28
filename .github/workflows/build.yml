@@ -1,9 +1,20 @@
-name: Build APK
+name: Build Android APK
 
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'keystore.properties'
+      - '.github/workflows/build.yml'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:

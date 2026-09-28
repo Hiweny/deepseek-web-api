@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeepSeek Web API</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <main id="viewport">
+      <section id="panel-control" class="panel active">
+        <div class="scroll">
+          <h1>DeepSeek Web API</h1>
+          <p class="sub">把 chat.deepseek.com 官网封装成本机 OpenAI 兼容接口</p>
+
+          <div class="card">
+            <div class="card-title">运行状态</div>
+            <div class="line"><span>服务</span><b id="st-service">—</b></div>
+            <div class="line"><span>网页</span><b id="st-page">—</b></div>
+            <div class="line"><span>登录</span><b id="st-login">—</b></div>
+            <div class="line"><span>调用</span><b id="st-calls">—</b></div>
+            <div class="line"><span>最近</span><b id="st-last">—</b></div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">接口信息</div>
+            <div class="line"><span>本机</span><b id="st-local" class="mono">—</b></div>
+            <div class="line"><span>局域网</span><b id="st-lan" class="mono">—</b></div>
+            <div class="line"><span>API Key</span><b id="st-key" class="mono">—</b></div>
+            <div class="row">
+              <button class="btn" data-action="copyLocal">复制本机地址</button>
+              <button class="btn" data-action="copyLan">复制局域网地址</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">设置</div>
+            <div id="settings-rows"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">操作</div>
+            <div class="row">
+              <button class="btn" data-action="reload">重载网页</button>
+              <button class="btn" data-action="newChat">新建对话</button>
+            </div>
+            <div class="row">
+              <button class="btn" data-action="openSite">打开官网</button>
+              <button class="btn" data-action="openDevtools">开发者工具</button>
+            </div>
+            <div class="row">
+              <button class="btn" data-action="clearLog">清空调试日志</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">运行日志</div>
+            <pre id="log"></pre>
+          </div>
+          <div class="footer">v<span id="ver">—</span> · 仅本机使用，请遵守 DeepSeek 服务条款</div>
+        </div>
+      </section>
+
+      <section id="panel-web" class="panel">
+        <webview id="dsView" src="about:blank"></webview>
+      </section>
+    </main>
+
+    <nav id="nav">
+      <button class="nav-btn active" data-tab="control"><span class="ic">🎛</span><span class="lb">控制台</span></button>
+      <button class="nav-btn" data-tab="web"><span class="ic">💬</span><span class="lb">对话页</span></button>
+    </nav>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>
