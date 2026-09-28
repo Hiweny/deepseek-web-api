@@ -76,6 +76,9 @@ public class MainActivity extends Activity {
         ApiService.start(this);
         requestNotifPermission();
         requestBatteryWhitelist();
+        if (Util.prefs(this).getBoolean("keep_screen", true)) {
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
         handler.post(attachWebRunnable);
         handler.postDelayed(statsTask, 1500L);
         WebHost.ensure(this, WebHost.loadBridgeJs(this));

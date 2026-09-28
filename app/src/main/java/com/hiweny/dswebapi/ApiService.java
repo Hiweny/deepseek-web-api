@@ -524,7 +524,7 @@ public class ApiService extends Service {
                 .setSmallIcon(android.R.drawable.stat_sys_upload_done)
                 .setOngoing(true)
                 .setContentIntent(contentPi)
-                .addAction(new Notification.Action.Builder(null, "停止", stopPi).build());
+                .addAction(0, "停止", stopPi);
         return b.build();
     }
 }
