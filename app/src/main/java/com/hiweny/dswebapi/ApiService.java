@@ -48,6 +48,14 @@ public class ApiService extends Service {
     private static volatile String lastCallInfo = "—";
     private static volatile boolean lastProbeLoggedIn = false, lastProbeReady = false;
 
+    // 会话上下文监控（估算 tokens）：跟踪当前官网会话累计上下文，达阈值自动轮换
+    private static final Object ctxLock = new Object();
+    private static volatile long sSessionTokens = 0L;
+    private static volatile String sTrackedSessionId = "";
+    private static volatile String sContextInfo = "—";
+    private static final long DEFAULT_CONTEXT_TOKENS = 1000000L;
+    private static final int DEFAULT_THRESHOLD_PCT = 70;
+
     public static void start(Context ctx) {
         Intent i = new Intent(ctx, ApiService.class).setAction(ACTION_START);
         if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i);
@@ -175,8 +183,116 @@ public class ApiService extends Service {
             if ("probe".equals(type) || "boot".equals(type)) {
                 if (o.has("loggedIn")) lastProbeLoggedIn = o.optBoolean("loggedIn");
                 if (o.has("ready")) lastProbeReady = o.optBoolean("ready");
+            } else if ("session".equals(type)) {
+                String sid = o.optString("sessionId", "");
+                synchronized (ctxLock) {
+                    if (!sid.equals(sTrackedSessionId)) {
+                        sTrackedSessionId = sid;
+                        sSessionTokens = 0;
+                        sContextInfo = "新会话 · 0";
+                        Util.log("会话切换 → 上下文计数重置" + (sid.isEmpty() ? "" : " (" + shortId(sid) + ")"));
+                    }
+                }
             }
         } catch (Exception ignored) {}
+    }
+
+    /* ================= 会话上下文监控 ================= */
+
+    public static String contextInfoText() { return sContextInfo; }
+
+    /** 手动新建对话后重置上下文计数。 */
+    public static void resetContext() {
+        synchronized (ctxLock) {
+            sSessionTokens = 0;
+            sTrackedSessionId = "";
+            sContextInfo = "0 / " + fmtTokens(DEFAULT_CONTEXT_TOKENS);
+        }
+    }
+
+    private long contextLimitTokens() {
+        int v = Util.prefs(this).getInt("context_tokens", (int) DEFAULT_CONTEXT_TOKENS);
+        if (v < 8000) v = 8000;
+        return v;
+    }
+
+    private int newChatThresholdPct() {
+        int v = Util.prefs(this).getInt("newchat_threshold", DEFAULT_THRESHOLD_PCT);
+        if (v < 10) v = 10;
+        if (v > 100) v = 100;
+        return v;
+    }
+
+    private boolean autoNewChat() { return Util.prefs(this).getBoolean("auto_newchat", true); }
+
+    /** 粗略估算 tokens：中日韩字符 ≈1.35 token/字，其余 ≈4 字符/token。 */
+    private static long estTokens(String s) {
+        if (s == null || s.isEmpty()) return 0;
+        long cjk = 0, other = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ((c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF)
+                    || (c >= 0x3040 && c <= 0x30FF) || (c >= 0x3000 && c <= 0x303F)
+                    || (c >= 0xFF00 && c <= 0xFFEF)) cjk++;
+            else other++;
+        }
+        return Math.round(cjk * 1.35 + other / 4.0);
+    }
+
+    private static String fmtTokens(long t) {
+        if (t >= 10000) return String.format(java.util.Locale.CHINA, "%.1f万", t / 10000.0);
+        return String.valueOf(t);
+    }
+
+    private static String shortId(String sid) {
+        if (sid == null || sid.isEmpty()) return "";
+        return sid.length() <= 8 ? sid : sid.substring(0, 8);
+    }
+
+    /** 每轮回复结束后累计会话上下文；达到阈值则自动新建对话并尽力删除旧会话。 */
+    private void afterReply(JSONObject r, String promptText) {
+        try {
+            long promptTok = estTokens(promptText);
+            String sid = r == null ? "" : r.optString("sessionId", "");
+            long replyTok = r == null ? 0 : (estTokens(r.optString("content", "")) + estTokens(r.optString("thinking", "")));
+            long used, limit;
+            int pct;
+            boolean rotate = false;
+            synchronized (ctxLock) {
+                if (!sid.isEmpty() && !sid.equals(sTrackedSessionId)) { sTrackedSessionId = sid; sSessionTokens = 0; }
+                sSessionTokens += promptTok + replyTok;
+                used = sSessionTokens;
+                limit = contextLimitTokens();
+                pct = newChatThresholdPct();
+                long threshold = limit * pct / 100;
+                if (autoNewChat() && threshold > 0 && used >= threshold && inflight.get() <= 1) {
+                    rotate = true;
+                    sSessionTokens = 0;
+                    sTrackedSessionId = "";
+                }
+                sContextInfo = fmtTokens(used) + " / " + fmtTokens(limit) + "（" + (limit > 0 ? used * 100 / limit : 0) + "%）";
+            }
+            Util.log("会话上下文 ≈ " + used + " tokens / " + limit + "（阈值 " + pct + "%）" + (rotate ? " → 自动新建对话" : ""));
+            if (rotate) rotateSession(sid);
+            updateNotification();
+        } catch (Exception ignored) {}
+    }
+
+    /** 自动轮换：新建对话，随后尽力删除旧会话（纯 DOM，失败即放弃）。 */
+    private void rotateSession(final String oldSid) {
+        chatExec.submit(() -> {
+            try {
+                JSONObject n = DeepSeekController.get().newChat();
+                Util.log("自动新建对话: " + (n.optBoolean("ok") ? "成功" : "失败(" + n.optString("error") + ")"));
+                if (n.optBoolean("ok") && oldSid != null && !oldSid.isEmpty()) {
+                    JSONObject d = DeepSeekController.get().deleteSession(oldSid, 20);
+                    Util.log("删除旧会话 " + shortId(oldSid) + ": " + (d.optBoolean("ok") ? "成功" : "未删除(" + d.optString("error") + ")"));
+                }
+            } catch (Exception e) {
+                Util.log("自动新建对话异常: " + e.getMessage());
+            }
+            updateNotification();
+        });
     }
 
     /* ================= HTTP 路由 ================= */
@@ -237,7 +353,7 @@ public class ApiService extends Service {
 
         final String model = body.optString("model", "deepseek");
         final boolean stream = body.optBoolean("stream", false);
-        final boolean stateless = Util.prefs(this).getBoolean("stateless", false);
+        final boolean stateless = Util.prefs(this).getBoolean("stateless", true);
 
         final PromptBuilder.Result pb;
         try { pb = PromptBuilder.build(body, stateless); }
@@ -305,6 +421,7 @@ public class ApiService extends Service {
         res.sendJson(out.toString());
         lastCallInfo = "成功 · " + (cr.toolCalls != null ? "工具调用" : cr.content.length() + "字")
                 + (r.optBoolean("recalled") ? " · 防撤回" : "");
+        afterReply(r, pb.text);
     }
 
     /* ================= 流式 ================= */
@@ -408,6 +525,7 @@ public class ApiService extends Service {
                             writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, emptyDelta(), "stop"));
                             lastCallInfo = "成功 · " + content.length() + "字" + (r.optBoolean("recalled") ? " · 防撤回" : "");
                         }
+                        afterReply(r, pb.text);
                         finishSse(res, lock);
                     } catch (Exception e) {
                         Util.log("流式收尾异常: " + e.getMessage());
@@ -513,6 +631,7 @@ public class ApiService extends Service {
 
         String text = "端口 " + port() + " · " + stateText + " · 调用 " + totalCalls.get()
                 + (inflight.get() > 0 ? "（进行中 " + inflight.get() + "）" : "")
+                + "\n上下文: " + sContextInfo
                 + "\n最近: " + lastCallInfo;
 
         Notification.Builder b;

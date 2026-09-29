@@ -48,7 +48,7 @@ public class MainActivity extends Activity {
     private View controlPanel;
     private int currentTab = TAB_CONTROL;
 
-    private TextView tvService, tvWeb, tvLogin, tvCalls, tvLast, tvBase, tvKey, tvLog;
+    private TextView tvService, tvWeb, tvLogin, tvCalls, tvCtx, tvLast, tvBase, tvKey, tvLog;
     private LinearLayout navIconBoxControl, navIconBoxWeb;
     private TextView navIconControl, navIconWeb, navLabelControl, navLabelWeb;
 
@@ -342,6 +342,7 @@ public class MainActivity extends Activity {
         tvWeb = line("网页", "—"); st.addView(tvWeb);
         tvLogin = line("登录", "—"); st.addView(tvLogin);
         tvCalls = line("调用", "—"); st.addView(tvCalls);
+        tvCtx = line("会话上下文", "—"); st.addView(tvCtx);
         tvLast = line("最近", "—"); st.addView(tvLast);
         col.addView(st);
 
@@ -364,6 +365,9 @@ public class MainActivity extends Activity {
         set.addView(makeRowCycle("思考策略", "thinking_mode", new String[]{"auto", "on", "off"}, "跟随/强制开/强制关"));
         set.addView(makeRowCycle("搜索策略", "search_mode", new String[]{"auto", "on", "off"}, "跟随/强制开/强制关"));
         set.addView(makeSwitch("无状态模式", "每次发送完整对话（不依赖官网会话记忆）", "stateless"));
+        set.addView(makeSwitch("自动新开对话", "上下文达阈值时自动新建对话，并尽力删除旧会话", "auto_newchat"));
+        set.addView(makeRow("上下文上限（tokens）", "context_tokens"));
+        set.addView(makeRow("新对话阈值（%）", "newchat_threshold"));
         set.addView(makeSwitch("保持屏幕常亮", "提高后台存活率（可关）", "keep_screen"));
         col.addView(set);
 
@@ -468,7 +472,8 @@ public class MainActivity extends Activity {
         col.addView(h);
         row.addView(col);
         Switch sw = new Switch(this);
-        sw.setChecked(Util.prefs(this).getBoolean(key, "keep_screen".equals(key)));
+        boolean defOn = "keep_screen".equals(key) || "stateless".equals(key) || "auto_newchat".equals(key);
+        sw.setChecked(Util.prefs(this).getBoolean(key, defOn));
         sw.setOnCheckedChangeListener((b, checked) -> {
             Util.prefs(this).edit().putBoolean(key, checked).apply();
             if ("keep_screen".equals(key)) {
@@ -512,6 +517,8 @@ public class MainActivity extends Activity {
             case "timeout": return sp.getInt("timeout", 300);
             case "thinking_mode": return sp.getString("thinking_mode", "auto");
             case "search_mode": return sp.getString("search_mode", "auto");
+            case "context_tokens": return sp.getInt("context_tokens", 1000000);
+            case "newchat_threshold": return sp.getInt("newchat_threshold", 70);
         }
         return "";
     }
@@ -520,6 +527,8 @@ public class MainActivity extends Activity {
         android.content.SharedPreferences.Editor e = Util.prefs(this).edit();
         if ("port".equals(key)) { try { e.putInt("port", Integer.parseInt(value)); e.remove("port_active"); } catch (Exception ignored) {} }
         else if ("timeout".equals(key)) { try { e.putInt("timeout", Integer.parseInt(value)); } catch (Exception ignored) {} }
+        else if ("context_tokens".equals(key)) { try { e.putInt("context_tokens", Integer.parseInt(value)); } catch (Exception ignored) {} }
+        else if ("newchat_threshold".equals(key)) { try { e.putInt("newchat_threshold", Integer.parseInt(value)); } catch (Exception ignored) {} }
         else e.putString(key, value);
         e.apply();
     }
@@ -528,7 +537,8 @@ public class MainActivity extends Activity {
         final EditText et = new EditText(this);
         et.setText(String.valueOf(currentSetting(key)));
         et.setTextColor(theme.text());
-        et.setInputType("port".equals(key) || "timeout".equals(key) ? InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT);
+        et.setInputType(("port".equals(key) || "timeout".equals(key) || "context_tokens".equals(key)
+                || "newchat_threshold".equals(key)) ? InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT);
         new AlertDialog.Builder(this).setTitle("修改 " + name).setView(et)
                 .setPositiveButton("保存", (d, w) -> {
                     String v = et.getText().toString().trim();
@@ -559,9 +569,10 @@ public class MainActivity extends Activity {
     }
 
     private void doNewChat() {
+        ApiService.resetContext();
         new Thread(() -> {
             JSONObject r = DeepSeekController.get().newChat();
-            handler.post(() -> toast(r.optBoolean("ok") ? "已新建对话" : "新建对话失败（请在对话页手动操作）"));
+            handler.post(() -> toast(r.optBoolean("ok") ? "已新建对话（上下文计数已重置）" : "新建对话失败（请在对话页手动操作）"));
         }).start();
     }
 
@@ -607,6 +618,7 @@ public class MainActivity extends Activity {
         tvWeb.setText(WebHost.isReady() ? "已加载 chat.deepseek.com" : (WebHost.get() != null ? "加载中…" : "未初始化"));
         tvLogin.setText(ApiService.isLoggedInText());
         tvCalls.setText("总 " + ApiService.totalCallsText());
+        tvCtx.setText(ApiService.contextInfoText());
         tvLast.setText(ApiService.lastCallText());
         tvBase.setText("http://127.0.0.1:" + currentSetting("port") + "/v1");
         tvKey.setText(String.valueOf(currentSetting("apikey")));
