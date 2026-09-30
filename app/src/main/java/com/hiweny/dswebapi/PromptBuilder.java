@@ -254,6 +254,8 @@ public final class PromptBuilder {
         sb.append("5. 不要用 markdown 代码块包裹工具调用。\n");
         sb.append("6. 字符串参数值用**双引号**（标准 JSON）。\n");
         sb.append("7. 不要将工具调用或最终回复放进思考内容里。\n");
+        sb.append("8. `arguments` 必须是一个 **JSON 对象**，不要把它整体再写成字符串（禁止 `\"arguments\": \"{...}\"` 这种写法）。\n");
+        sb.append("9. 若某个参数值本身就是一段 JSON 文本，则该值内部的双引号只需要转义**一层**，请严格照下方示例的写法，不要漏转义、也不要多转义。\n");
         if (!names.isEmpty()) {
             String a = names.get(0);
             sb.append("\n**示例**（调用一个工具）：\n");
@@ -264,6 +266,10 @@ public final class PromptBuilder {
                   .append(names.get(1)).append("\", \"arguments\": {}}]").append(TOOL_END);
             }
         }
+        sb.append("\n**示例**（参数值里含 JSON 字符串时，注意只转义一层）：\n");
+        sb.append(TOOL_START)
+          .append("[{\"name\": \"example\", \"arguments\": {\"params\": {\"files\": \"[{\\\"field_name\\\": \\\"a.txt\\\"}]\"}}}]")
+          .append(TOOL_END);
         String tc = req.optString("tool_choice", "");
         if ("required".equals(tc)) sb.append("\n\n**注意：你必须调用一个或多个工具。**");
         return sb.toString();

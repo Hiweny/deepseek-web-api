@@ -127,14 +127,6 @@ public class DeepSeekController {
                 return;
             }
             if ("newChat".equals(type)) { Util.log("新建对话: " + (o.optBoolean("ok") ? "成功" : "失败")); return; }
-            if ("deleteSession".equals(type)) {
-                Util.log("删除旧会话: " + (o.optBoolean("ok") ? "成功" : "未完成(" + o.optString("error") + ")"));
-                return;
-            }
-            if ("deleteSession".equals(type)) {
-                Util.log("删除旧会话: " + (o.optBoolean("ok") ? "成功" : "未完成(" + o.optString("error") + ")"));
-                return;
-            }
             if ("pageReply".equals(type)) {
                 Util.log("页面手动回复 正文=" + o.optString("content").length() + "字"
                         + (o.optBoolean("recalled") ? " [撤回已拦截]" : ""));
@@ -239,11 +231,4 @@ public class DeepSeekController {
     }
 
     public JSONObject newChat() { return callJs("newChat", new JSONObject(), 20); }
-
-    /** 删除指定会话（纯 DOM 尽力而为，失败不影响主流程）。 */
-    public JSONObject deleteSession(String sessionId, int timeoutSec) {
-        JSONObject arg = new JSONObject();
-        try { arg.put("sessionId", sessionId == null ? "" : sessionId); } catch (Exception ignored) {}
-        return callJs("deleteSession", arg, timeoutSec);
-    }
 }

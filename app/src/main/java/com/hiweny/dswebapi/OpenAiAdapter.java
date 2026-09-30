@@ -22,6 +22,8 @@ public final class OpenAiAdapter {
         public String thinking = "";
         public JSONArray toolCalls = null;
         public String finishReason = "stop";
+        /** 工具块存在但解析失败时置位，避免把标记泄漏到正文。 */
+        public String toolError = "";
     }
 
     /** 标签归一化（1:1 字符映射，长度不变，索引可对齐）：｜->|，▁->_ */
@@ -51,7 +53,11 @@ public final class OpenAiAdapter {
         }
         JSONArray calls = parseToolCalls(inner);
         if (calls == null || calls.length() == 0) {
-            r.content = content;
+            // 解析失败：只保留工具块之外的正文，绝不把工具调用标记 / JSON 泄漏到正文
+            String keepBefore = content.substring(0, s).trim();
+            String keepAfter = after < content.length() ? content.substring(after).trim() : "";
+            r.content = (keepBefore + (keepAfter.isEmpty() ? "" : "\n" + keepAfter)).trim();
+            r.toolError = "TOOL_PARSE_FAIL";
             return r;
         }
         r.toolCalls = calls;
@@ -89,6 +95,29 @@ public final class OpenAiAdapter {
         // 回退：单个对象
         JSONObject one = tryObject(s);
         if (one != null) { JSONArray out = new JSONArray(); out.put(one); return normalizeCalls(out); }
+        // 回退：宽松解析（容忍模型在「嵌套 / 字符串化 JSON」上的转义错误，带回溯校验）
+        Object loose = LooseJson.parse(s);
+        if (loose instanceof JSONArray) {
+            JSONArray la = normalizeCalls((JSONArray) loose);
+            if (la.length() > 0) return la;
+        }
+        if (loose instanceof JSONObject) {
+            JSONArray la = new JSONArray();
+            la.put((JSONObject) loose);
+            la = normalizeCalls(la);
+            if (la.length() > 0) return la;
+        }
+        // 回退：逐个提取 {...} 片段后再宽松解析
+        List<String> chunks = extractObjects(s);
+        for (String ch : chunks) {
+            Object lo = LooseJson.parse(ch);
+            if (lo instanceof JSONObject) {
+                JSONArray la = new JSONArray();
+                la.put((JSONObject) lo);
+                la = normalizeCalls(la);
+                if (la.length() > 0) return la;
+            }
+        }
         return null;
     }
 
@@ -99,29 +128,55 @@ public final class OpenAiAdapter {
         try { return new JSONObject(s); } catch (Exception e) { return null; }
     }
 
-    /** 统一为 [{name, arguments}]（arguments 为对象）。 */
+    /** 统一为 [{name, arguments}]（arguments 为对象，必要时经宽松解析修复）。 */
     private static JSONArray normalizeCalls(JSONArray a) {
         JSONArray out = new JSONArray();
         for (int i = 0; i < a.length(); i++) {
             JSONObject item = a.optJSONObject(i);
             if (item == null) continue;
-            String name = item.optString("name", item.optString("function", ""));
+            String name = firstString(item, "name", "tool_name", "tool");
+            if (name.isEmpty()) {
+                JSONObject fn = item.optJSONObject("function");
+                if (fn != null) name = firstString(fn, "name", "tool_name", "tool");
+            }
+            if (name.isEmpty()) continue;
             Object args = item.opt("arguments");
-            if (args == null && item.has("parameters")) args = item.opt("parameters");
+            if (args == null) args = item.opt("parameters");
+            if (args == null) args = item.opt("args");
+            if (args == null) args = item.opt("input");
+            if (args == null) {
+                JSONObject fn = item.optJSONObject("function");
+                if (fn != null) args = fn.opt("arguments");
+            }
             JSONObject call = new JSONObject();
             try {
                 call.put("name", name);
-                if (args instanceof JSONObject || args instanceof JSONArray) call.put("arguments", args);
-                else if (args instanceof String) {
-                    String as = ((String) args).trim();
-                    JSONObject ao = tryObject(as);
-                    if (ao != null) call.put("arguments", ao);
-                    else { call.put("arguments", new JSONObject()); call.put("_raw_args", as); }
-                } else call.put("arguments", new JSONObject());
+                putArgs(call, args);
             } catch (Exception ignored) {}
             out.put(call);
         }
         return out;
+    }
+
+    private static String firstString(JSONObject o, String... keys) {
+        for (String k : keys) {
+            String v = o.optString(k, "").trim();
+            if (!v.isEmpty()) return v;
+        }
+        return "";
+    }
+
+    /** 各种形态的 arguments 统一成「对象」；实在解析不出则把原始文本存入 _raw_args，绝不静默丢弃。 */
+    private static void putArgs(JSONObject call, Object args) throws Exception {
+        if (args instanceof JSONObject || args instanceof JSONArray) { call.put("arguments", LooseJson.normalizeJsonStrings(args)); return; }
+        String as = args == null ? "" : String.valueOf(args).trim();
+        if (as.isEmpty() || "{}".equals(as)) { call.put("arguments", new JSONObject()); return; }
+        JSONObject ao = tryObject(as);
+        if (ao != null) { call.put("arguments", LooseJson.normalizeJsonStrings(ao)); return; }
+        Object lo = LooseJson.parse(as);
+        if (lo instanceof JSONObject || lo instanceof JSONArray) { call.put("arguments", LooseJson.normalizeJsonStrings(lo)); return; }
+        call.put("arguments", new JSONObject());
+        call.put("_raw_args", as);
     }
 
     /** 扫描出顶层 {...} 片段（简易括号计数，忽略字符串内括号）。 */
@@ -175,8 +230,7 @@ public final class OpenAiAdapter {
             JSONObject c = calls.optJSONObject(i);
             if (c == null) continue;
             String name = c.optString("name");
-            Object args = c.opt("arguments");
-            String argStr = args == null ? "{}" : (args instanceof String ? (String) args : args.toString());
+            String argStr = argStringOf(c);
             JSONObject tc = new JSONObject();
             JSONObject fn = new JSONObject();
             try {
@@ -189,6 +243,27 @@ public final class OpenAiAdapter {
             out.put(tc);
         }
         return out;
+    }
+
+    /**
+     * 生成 OpenAI 要求的 arguments 字符串。
+     * 无论模型/上游给的是对象还是「字符串化的 JSON」，这里都会归一化为**合法 JSON 文本**，
+     * 从而彻底消除多层转义（「\\" vs \"）在下游客户端导致的解析失败。
+     */
+    private static String argStringOf(JSONObject c) {
+        Object args = c.opt("arguments");
+        String raw = c.optString("_raw_args", "");
+        String text;
+        if (args instanceof JSONObject && ((JSONObject) args).length() == 0 && !raw.isEmpty()) text = raw;
+        else if (args == null) text = raw;
+        else if (args instanceof String) text = (String) args;
+        else text = args.toString();
+        String t = text == null ? "" : text.trim();
+        if (t.isEmpty()) return "{}";
+        Object parsed = LooseJson.parse(t);
+        if (parsed instanceof JSONObject) return ((JSONObject) parsed).toString();
+        if (parsed instanceof JSONArray) return ((JSONArray) parsed).toString();
+        return t;
     }
 
     public static JSONObject buildCompletion(String id, String model, long created,

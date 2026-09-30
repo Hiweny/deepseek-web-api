@@ -641,110 +641,6 @@
     return false;
   }
 
-  /* ================= 删除会话（纯 DOM，尽力而为；定位不到精确目标就放弃，绝不误删） ================= */
-  function visibleEnough(el) {
-    try { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return true; }
-  }
-  function popupAncestor(el) {
-    var n = el, hops = 0;
-    while (n && hops < 6) {
-      var cls = ((n.className || '') + '').toLowerCase();
-      var role = (n.getAttribute && (n.getAttribute('role') || '').toLowerCase()) || '';
-      if (/menu|dropdown|popover|popper|modal|dialog|tooltip/.test(cls + ' ' + role)) return true;
-      n = n.parentElement; hops++;
-    }
-    return false;
-  }
-  function findSessionItem(sid) {
-    if (!sid) return null;
-    var links = document.querySelectorAll('a[href*="/a/chat/s/"]');
-    for (var i = 0; i < links.length; i++) {
-      var href = links[i].getAttribute('href') || '';
-      if (href.indexOf(sid) !== -1) return links[i];
-    }
-    var nodes = document.querySelectorAll('[data-session-id],[data-id]');
-    for (var j = 0; j < nodes.length; j++) {
-      var d = (nodes[j].getAttribute('data-session-id') || nodes[j].getAttribute('data-id') || '');
-      if (d && d.indexOf(sid) !== -1) {
-        var a = nodes[j].querySelector ? nodes[j].querySelector('a[href*="/a/chat/s/"]') : null;
-        return a || nodes[j];
-      }
-    }
-    return null;
-  }
-  function nearestRow(el) {
-    var row = el, hops = 0;
-    while (row && hops < 5) {
-      try { if (row.querySelectorAll && row.querySelectorAll('button,[role="button"]').length > 0) return row; } catch (e) {}
-      row = row.parentElement; hops++;
-    }
-    return (el && el.parentElement) || el;
-  }
-  function textEl(scope, texts, requirePopup) {
-    var nodes = scope.querySelectorAll('button,[role="button"],li,div,span,a');
-    for (var i = 0; i < nodes.length; i++) {
-      var n = nodes[i];
-      if (n.children.length > 1) continue;
-      var t = (n.textContent || '').trim();
-      if (!t) continue;
-      for (var k = 0; k < texts.length; k++) {
-        if (t === texts[k]) {
-          if (requirePopup && !popupAncestor(n)) continue;
-          if (!visibleEnough(n)) continue;
-          return n;
-        }
-      }
-    }
-    return null;
-  }
-  function domDeleteSession(o) {
-    o = o || {};
-    var sid = o.sessionId || '';
-    var finished = false;
-    function done(ok, err) {
-      if (finished) return; finished = true;
-      emit({ type: 'deleteSession', reqId: o.reqId || '', ok: ok, error: err || '', sessionId: sid });
-    }
-    if (!sid) { done(false, 'NO_SESSION'); return; }
-    var item = findSessionItem(sid);
-    if (!item) { done(false, 'NO_ITEM'); return; }   // 安全阀：只有精确定位到该会话才继续
-    var row = nearestRow(item);
-    var bs = [];
-    try { bs = Array.prototype.slice.call(row.querySelectorAll('button,[role="button"]')); } catch (e) { bs = []; }
-    var more = null;
-    for (var i = 0; i < bs.length; i++) {
-      var b = bs[i];
-      if (b === item || (b.contains && b.contains(item))) continue;
-      var sig = ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.className || '')).toLowerCase();
-      if (/more|menu|option|ellipsis|dots|更多|操作/.test(sig)) { more = b; break; }
-    }
-    if (!more) {
-      for (var j = bs.length - 1; j >= 0; j--) {
-        if (bs[j] === item || (bs[j].contains && bs[j].contains(item))) continue;
-        if ((bs[j].tagName || '').toUpperCase() === 'BUTTON') { more = bs[j]; break; }
-      }
-    }
-    if (!more) { done(false, 'NO_MENU_BTN'); return; }
-    try { more.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); } catch (e) {}
-    try { more.click(); } catch (e) { done(false, 'MENU_CLICK_FAIL'); return; }
-
-    var delTexts = ['删除', '删除对话', '删除聊天', 'Delete'];
-    setTimeout(function () {
-      var del = textEl(document.body, delTexts, true);
-      if (!del) { done(false, 'NO_DELETE_ITEM'); return; }
-      try { del.click(); } catch (e) { done(false, 'DELETE_CLICK_FAIL'); return; }
-      setTimeout(function () {
-        var dlg = null;
-        try { dlg = document.querySelector('[role="dialog"],[class*="modal"],[class*="dialog"]'); } catch (e) {}
-        if (dlg) {
-          var okBtn = textEl(dlg, ['删除', '确定', '确认', 'Delete', 'OK', 'Confirm'], false);
-          if (okBtn) { try { okBtn.click(); } catch (e) {} }
-        }
-        setTimeout(function () { done(true, ''); }, 200);
-      }, 500);
-    }, 350);
-  }
-
   /* ================= 主题 ================= */
   function applyTheme(dark) {
     try {
@@ -804,7 +700,6 @@
       var ok = clickNewChat();
       emit({ type: 'newChat', reqId: o.reqId || '', ok: ok, sessionId: currentSessionId() });
     },
-    deleteSession: function (o) { domDeleteSession(o || {}); },
     sessionId: function () { return currentSessionId(); },
     inputText: function () { var el = findInput(); return el ? (el.value || el.textContent || '') : ''; }
   };

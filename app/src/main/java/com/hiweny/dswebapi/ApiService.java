@@ -273,21 +273,17 @@ public class ApiService extends Service {
                 sContextInfo = fmtTokens(used) + " / " + fmtTokens(limit) + "（" + (limit > 0 ? used * 100 / limit : 0) + "%）";
             }
             Util.log("会话上下文 ≈ " + used + " tokens / " + limit + "（阈值 " + pct + "%）" + (rotate ? " → 自动新建对话" : ""));
-            if (rotate) rotateSession(sid);
+            if (rotate) rotateSession();
             updateNotification();
         } catch (Exception ignored) {}
     }
 
-    /** 自动轮换：新建对话，随后尽力删除旧会话（纯 DOM，失败即放弃）。 */
-    private void rotateSession(final String oldSid) {
+    /** 自动轮换：上下文达阈值时点击「新建对话」（旧会话不自动删除，由用户自行处理）。 */
+    private void rotateSession() {
         chatExec.submit(() -> {
             try {
                 JSONObject n = DeepSeekController.get().newChat();
                 Util.log("自动新建对话: " + (n.optBoolean("ok") ? "成功" : "失败(" + n.optString("error") + ")"));
-                if (n.optBoolean("ok") && oldSid != null && !oldSid.isEmpty()) {
-                    JSONObject d = DeepSeekController.get().deleteSession(oldSid, 20);
-                    Util.log("删除旧会话 " + shortId(oldSid) + ": " + (d.optBoolean("ok") ? "成功" : "未删除(" + d.optString("error") + ")"));
-                }
             } catch (Exception e) {
                 Util.log("自动新建对话异常: " + e.getMessage());
             }
@@ -519,7 +515,10 @@ public class ApiService extends Service {
                             writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, emptyDelta(), "tool_calls"));
                             lastCallInfo = "成功 · 工具调用 x" + tcs.length();
                         } else {
-                            if (content.length() > emitted[0]) {
+                            if (toolMode[0]) {
+                                // 出现过工具调用标记但最终未解析出调用：丢弃该区块，绝不把标记 / JSON 泄漏到正文
+                                Util.log("工具调用区块解析失败，已忽略（避免标记泄漏到正文）");
+                            } else if (content.length() > emitted[0]) {
                                 writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", content.substring(emitted[0])), null));
                             }
                             writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, emptyDelta(), "stop"));
