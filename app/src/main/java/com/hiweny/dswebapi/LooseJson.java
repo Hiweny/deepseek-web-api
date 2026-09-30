@@ -173,15 +173,34 @@ public final class LooseJson {
     }
 
     private static String fixJsonString(String s) {
-        if (s == null || s.indexOf('\\') < 0) return s;
-        String u = unescapeOneLevel(s);
-        if (u.equals(s)) return s;
-        String t = u.trim();
-        if (t.length() < 2) return s;
-        char c0 = t.charAt(0);
+        if (s == null) return s;
+        String st = s.trim();
+        if (st.length() < 2) return s;
+        char c0 = st.charAt(0);
         if (c0 != '{' && c0 != '[') return s;
-        Object probe = parseOnce(t);
-        return probe != null ? u : s;
+
+        // 1) 本身就是「严格合法」的 JSON（说明嵌套 JSON 已正确转义）→ 原样保留，绝不能剥层
+        if (strictOk(st)) return s;
+
+        // 2) 过度转义：去掉一层转义后变成严格合法 → 采用
+        if (s.indexOf('\\') >= 0) {
+            String u = unescapeOneLevel(s);
+            if (!u.equals(s) && strictOk(u.trim())) return u;
+        }
+
+        // 3) 转义不足（如 files:"[{\"field_name\":...}]" 内层引号裸露）：
+        //    用宽松解析恢复出真实结构，再重新序列化成「严格合法」的文本交还。
+        Object v = parseOnce(st);
+        if (v instanceof JSONObject) return ((JSONObject) v).toString();
+        if (v instanceof JSONArray) return ((JSONArray) v).toString();
+        return s;
+    }
+
+    /** 是否为标准的严格合法 JSON（交给 org.json 判定，等价于下游客户端的 JSON.parse）。 */
+    private static boolean strictOk(String t) {
+        try { new JSONObject(t); return true; } catch (Exception ignored) { }
+        try { new JSONArray(t); return true; } catch (Exception ignored) { }
+        return false;
     }
 
     /** 去掉一层转义：\X -> X（未知转义保持原样）。 */

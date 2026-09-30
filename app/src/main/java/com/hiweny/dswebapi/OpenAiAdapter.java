@@ -32,8 +32,20 @@ public final class OpenAiAdapter {
         return s.replace('\uFF5C', '|').replace('\u2581', '_');
     }
 
-    /** 从模型输出文本中解析工具调用；返回的 content 为剔除工具块后的正文。 */
     public static ChatResult process(String thinkingText, String contentText) {
+        return process(thinkingText, contentText, null);
+    }
+
+    /**
+     * 从模型输出文本中解析工具调用；返回的 content 为剔除工具块后的正文。
+     *
+     * <p>只有当标记块内确实是「结构合法、且工具名来自本次请求声明的列表」的工具调用时，
+     * 才按工具调用处理；否则一律视为普通正文原样返回（不在正文里吞内容）。
+     * 这样才能区分「真的调用工具」与「模型在正文里解释/举例这个标记」。
+     *
+     * @param allowedNames 本次请求声明的工具名集合，可为 null（表示不校验名字）
+     */
+    public static ChatResult process(String thinkingText, String contentText, java.util.Set<String> allowedNames) {
         ChatResult r = new ChatResult();
         r.thinking = thinkingText == null ? "" : thinkingText;
         String content = contentText == null ? "" : contentText;
@@ -51,13 +63,12 @@ public final class OpenAiAdapter {
             inner = content.substring(s + START_NORM.length(), e);
             after = e + END_NORM.length();
         }
-        JSONArray calls = parseToolCalls(inner);
+        JSONArray calls = filterCalls(parseToolCalls(inner), allowedNames);
         if (calls == null || calls.length() == 0) {
-            // 解析失败：只保留工具块之外的正文，绝不把工具调用标记 / JSON 泄漏到正文
-            String keepBefore = content.substring(0, s).trim();
-            String keepAfter = after < content.length() ? content.substring(after).trim() : "";
-            r.content = (keepBefore + (keepAfter.isEmpty() ? "" : "\n" + keepAfter)).trim();
-            r.toolError = "TOOL_PARSE_FAIL";
+            // 不是有效工具调用（例如模型只是在正文里描述/举例这个标记）：
+            // 原样保留整段文本，绝不吞掉正文内容。
+            r.content = content;
+            r.toolError = "NOT_A_TOOL_CALL";
             return r;
         }
         r.toolCalls = calls;
@@ -69,55 +80,72 @@ public final class OpenAiAdapter {
         return r;
     }
 
+    /**
+     * 只保留「结构完整（有 name）」且「名字确实在本次声明的工具列表里」的调用。
+     * 列表为空时不做名字校验（部分客户端不传 tools）。
+     */
+    private static JSONArray filterCalls(JSONArray calls, java.util.Set<String> allowedNames) {
+        if (calls == null) return null;
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < calls.length(); i++) {
+            JSONObject c = calls.optJSONObject(i);
+            if (c == null) continue;
+            String name = c.optString("name", "").trim();
+            if (name.isEmpty()) continue;
+            if (allowedNames != null && !allowedNames.isEmpty()) {
+                boolean hit = false;
+                for (String n : allowedNames) {
+                    if (n != null && n.trim().equalsIgnoreCase(name)) { hit = true; break; }
+                }
+                if (!hit) continue;
+            }
+            out.put(c);
+        }
+        return out;
+    }
+
     static JSONArray parseToolCalls(String inner) {
         if (inner == null) return null;
         String s = inner.trim();
         // 去掉可能的代码围栏
         s = s.replaceAll("^(?s)```[a-zA-Z0-9]*\\s*", "").replaceAll("(?s)```\\s*$", "").trim();
+
+        // 1) 严格解析：整段 JSON 数组（绝大多数正常输出走这里）
         int lb = s.indexOf('['), rb = s.lastIndexOf(']');
         if (lb >= 0 && rb > lb) {
-            String arr = s.substring(lb, rb + 1);
-            JSONArray a = tryArray(arr);
-            if (a != null) return normalizeCalls(a);
+            JSONArray a = tryArray(s.substring(lb, rb + 1));
+            if (a != null) { JSONArray n = normalizeCalls(a); if (n.length() > 0) return n; }
         }
-        // 回退：直接当对象数组，或逐个提取 {...}
-        JSONArray a = tryArray(s);
-        if (a != null) return normalizeCalls(a);
-        List<String> objs = extractObjects(s);
-        if (!objs.isEmpty()) {
-            JSONArray out = new JSONArray();
-            for (String o : objs) {
-                JSONObject j = tryObject(o);
-                if (j != null) out.put(j);
-            }
-            if (out.length() > 0) return normalizeCalls(out);
+        // 2) 严格解析：整段文本 / 单个对象
+        JSONArray a2 = tryArray(s);
+        if (a2 != null) { JSONArray n = normalizeCalls(a2); if (n.length() > 0) return n; }
+        JSONObject o2 = tryObject(s);
+        if (o2 != null) { JSONArray n = wrapCalls(o2); if (n.length() > 0) return n; }
+
+        // 3) 宽松解析：修复「嵌套 / 字符串化 JSON」的多层转义错误（回溯 + 自洽择优）
+        //    必须排在 extractObjects 之前：括号切片遇到少转义会产生"语法合法但语义截断"的假对象。
+        JSONArray loose = normalizeLoose(LooseJson.parse(s));
+        if (loose != null && loose.length() > 0) return loose;
+
+        // 4) 最后的兜底：逐个提取 {...} 片段，再严格 / 宽松各试一次
+        for (String ch : extractObjects(s)) {
+            JSONObject o = tryObject(ch);
+            if (o != null) { JSONArray n = wrapCalls(o); if (n.length() > 0) return n; }
+            JSONArray n2 = normalizeLoose(LooseJson.parse(ch));
+            if (n2 != null && n2.length() > 0) return n2;
         }
-        // 回退：单个对象
-        JSONObject one = tryObject(s);
-        if (one != null) { JSONArray out = new JSONArray(); out.put(one); return normalizeCalls(out); }
-        // 回退：宽松解析（容忍模型在「嵌套 / 字符串化 JSON」上的转义错误，带回溯校验）
-        Object loose = LooseJson.parse(s);
-        if (loose instanceof JSONArray) {
-            JSONArray la = normalizeCalls((JSONArray) loose);
-            if (la.length() > 0) return la;
-        }
-        if (loose instanceof JSONObject) {
-            JSONArray la = new JSONArray();
-            la.put((JSONObject) loose);
-            la = normalizeCalls(la);
-            if (la.length() > 0) return la;
-        }
-        // 回退：逐个提取 {...} 片段后再宽松解析
-        List<String> chunks = extractObjects(s);
-        for (String ch : chunks) {
-            Object lo = LooseJson.parse(ch);
-            if (lo instanceof JSONObject) {
-                JSONArray la = new JSONArray();
-                la.put((JSONObject) lo);
-                la = normalizeCalls(la);
-                if (la.length() > 0) return la;
-            }
-        }
+        return null;
+    }
+
+    private static JSONArray wrapCalls(JSONObject o) {
+        JSONArray a = new JSONArray();
+        a.put(o);
+        return normalizeCalls(a);
+    }
+
+    private static JSONArray normalizeLoose(Object v) {
+        if (v instanceof JSONArray) return normalizeCalls((JSONArray) v);
+        if (v instanceof JSONObject) return wrapCalls((JSONObject) v);
         return null;
     }
 
@@ -260,6 +288,9 @@ public final class OpenAiAdapter {
         else text = args.toString();
         String t = text == null ? "" : text.trim();
         if (t.isEmpty()) return "{}";
+        // 合法 JSON 直接用严格解析（更快、更稳），只有严格解析失败时才走宽松修复
+        try { return new JSONObject(t).toString(); } catch (Exception ignored) { }
+        try { return new JSONArray(t).toString(); } catch (Exception ignored) { }
         Object parsed = LooseJson.parse(t);
         if (parsed instanceof JSONObject) return ((JSONObject) parsed).toString();
         if (parsed instanceof JSONArray) return ((JSONArray) parsed).toString();

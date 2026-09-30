@@ -54,6 +54,8 @@ public class ApiService extends Service {
     private static volatile String sTrackedSessionId = "";
     private static volatile String sContextInfo = "—";
     private static final long DEFAULT_CONTEXT_TOKENS = 1000000L;
+    /** 最近一次请求声明的工具名：部分客户端只在部分请求里带 tools，用它兜底校验。 */
+    private static volatile java.util.Set<String> sLastToolNames = java.util.Collections.emptySet();
     private static final int DEFAULT_THRESHOLD_PCT = 70;
 
     public static void start(Context ctx) {
@@ -355,6 +357,9 @@ public class ApiService extends Service {
         try { pb = PromptBuilder.build(body, stateless); }
         catch (Exception e) { try { res.sendJson(400, errJson("Bad request: " + e.getMessage(), "invalid_request_error")); } catch (Exception ignored) {} return; }
 
+        if (!pb.toolNames.isEmpty()) sLastToolNames = new java.util.LinkedHashSet<>(pb.toolNames);
+        final java.util.Set<String> toolNames = pb.toolNames.isEmpty() ? sLastToolNames : new java.util.LinkedHashSet<>(pb.toolNames);
+
         if (pb.text.trim().isEmpty() && pb.attachments.isEmpty()) {
             try { res.sendJson(400, errJson("messages 为空", "invalid_request_error")); } catch (Exception ignored) {}
             return;
@@ -381,8 +386,8 @@ public class ApiService extends Service {
                     JSONObject r = DeepSeekController.get().attachFile(a.name, a.mime, a.base64, 150);
                     if (!r.optBoolean("ok")) Util.log("附件挂载失败: " + a.name + " " + r.optString("error"));
                 }
-                if (stream) runStream(model, pb, res);
-                else runBlocking(model, pb, res);
+                if (stream) runStream(model, pb, res, toolNames);
+                else runBlocking(model, pb, res, toolNames);
                 long cost = System.currentTimeMillis() - t0;
                 okCalls.incrementAndGet();
                 lastCallInfo = "成功 · " + (cost / 1000.0) + "s · " + (pb.attachments.size() > 0 ? pb.attachments.size() + "附件 · " : "");
@@ -398,7 +403,8 @@ public class ApiService extends Service {
         });
     }
 
-    private void runBlocking(String model, PromptBuilder.Result pb, HttpBridgeServer.Response res) throws Exception {
+    private void runBlocking(String model, PromptBuilder.Result pb, HttpBridgeServer.Response res,
+                             java.util.Set<String> toolNames) throws Exception {
         int timeout = Util.prefs(this).getInt("timeout", 300);
         JSONObject r = DeepSeekController.get().sendPrompt(pb.text, null, timeout);
         String thinking = r.optString("thinking");
@@ -409,7 +415,7 @@ public class ApiService extends Service {
             lastCallInfo = "失败: " + err;
             return;
         }
-        OpenAiAdapter.ChatResult cr = OpenAiAdapter.process(thinking, content);
+        OpenAiAdapter.ChatResult cr = OpenAiAdapter.process(thinking, content, toolNames);
         String id = OpenAiAdapter.newId();
         long created = System.currentTimeMillis() / 1000;
         JSONObject out = OpenAiAdapter.buildCompletion(id, model, created, cr.thinking, cr.content, cr.toolCalls,
@@ -424,7 +430,7 @@ public class ApiService extends Service {
 
     private static final int HOLD = 32;
 
-    private void runStream(String model, PromptBuilder.Result pb, HttpBridgeServer.Response res) {
+    private void runStream(String model, PromptBuilder.Result pb, HttpBridgeServer.Response res, final java.util.Set<String> toolNames) {
         int timeout = Util.prefs(this).getInt("timeout", 300);
         final String id = OpenAiAdapter.newId();
         final long created = System.currentTimeMillis() / 1000;
@@ -492,7 +498,7 @@ public class ApiService extends Service {
                             lastCallInfo = "失败: " + r.optString("error");
                             return;
                         }
-                        OpenAiAdapter.ChatResult cr = OpenAiAdapter.process(r.optString("thinking"), content);
+                        OpenAiAdapter.ChatResult cr = OpenAiAdapter.process(r.optString("thinking"), content, toolNames);
                         if (cr.toolCalls != null && cr.toolCalls.length() > 0) {
                             // 工具调用：content 中标签之前若还有未下发正文，先补发
                             String before = cr.content;
@@ -516,8 +522,12 @@ public class ApiService extends Service {
                             lastCallInfo = "成功 · 工具调用 x" + tcs.length();
                         } else {
                             if (toolMode[0]) {
-                                // 出现过工具调用标记但最终未解析出调用：丢弃该区块，绝不把标记 / JSON 泄漏到正文
-                                Util.log("工具调用区块解析失败，已忽略（避免标记泄漏到正文）");
+                                // 出现过标记但并非有效工具调用（例如正文里在解释/举例这个标记）：
+                                // 把这段原文补发出去，绝不吞掉正文内容。
+                                if (content.length() > emitted[0]) {
+                                    writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", content.substring(emitted[0])), null));
+                                }
+                                Util.log("检测到标记但非有效工具调用，已按正文输出");
                             } else if (content.length() > emitted[0]) {
                                 writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", content.substring(emitted[0])), null));
                             }

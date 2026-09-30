@@ -29,6 +29,8 @@ public final class PromptBuilder {
         public String text = "";
         public final List<Attachment> attachments = new ArrayList<>();
         public boolean hasTools = false;
+        /** 本次请求声明的工具名（用于甄别「正文里解释标记」的误判）。 */
+        public final List<String> toolNames = new ArrayList<>();
     }
 
     private PromptBuilder() {}
@@ -40,6 +42,7 @@ public final class PromptBuilder {
 
         JSONArray tools = req.optJSONArray("tools");
         r.hasTools = tools != null && tools.length() > 0;
+        collectToolNames(tools, r.toolNames);
 
         String toolBlock = r.hasTools ? buildToolBlock(tools, req) : "";
         String formatBlock = responseFormatBlock(req.optJSONObject("response_format"));
@@ -223,6 +226,18 @@ public final class PromptBuilder {
         return "";
     }
 
+    /** 收集工具名（兼容 function.name 与顶层 name 两种形态）。 */
+    private static void collectToolNames(JSONArray tools, List<String> out) {
+        if (tools == null) return;
+        for (int i = 0; i < tools.length(); i++) {
+            JSONObject t = tools.optJSONObject(i);
+            if (t == null) continue;
+            JSONObject fn = t.optJSONObject("function");
+            String n = (fn != null ? fn.optString("name", "") : t.optString("name", "")).trim();
+            if (!n.isEmpty() && !out.contains(n)) out.add(n);
+        }
+    }
+
     private static String buildToolBlock(JSONArray tools, JSONObject req) {
         StringBuilder sb = new StringBuilder();
         sb.append("你可以使用以下工具：\n");
@@ -256,6 +271,9 @@ public final class PromptBuilder {
         sb.append("7. 不要将工具调用或最终回复放进思考内容里。\n");
         sb.append("8. `arguments` 必须是一个 **JSON 对象**，不要把它整体再写成字符串（禁止 `\"arguments\": \"{...}\"` 这种写法）。\n");
         sb.append("9. 若某个参数值本身就是一段 JSON 文本，则该值内部的双引号只需要转义**一层**，请严格照下方示例的写法，不要漏转义、也不要多转义。\n");
+        sb.append("10. 严禁在正文、思考、代码块或示例中原样写出工具调用标记本身。"
+                + "若需要说明格式，请用「工具调用开始标记 / 结束标记」这样的文字描述；"
+                + "正文里出现真实标记会被系统当成工具调用，导致你后面的内容被截断。\n");
         if (!names.isEmpty()) {
             String a = names.get(0);
             sb.append("\n**示例**（调用一个工具）：\n");
