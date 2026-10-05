@@ -123,13 +123,17 @@ jobs:
           # 直接截屏会把 1440x900 的窗口裁掉一半），便于远程确认 UI 观感与自适应。
           try {
             Add-Type -AssemblyName System.Drawing
-            Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect); public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }'
+            Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags); public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }'
             New-Item -ItemType Directory -Force ui-shot | Out-Null
             Start-Sleep -Seconds 4
             $p.Refresh()
             $h = (Get-Process -Id $p.Id).MainWindowHandle
             Write-Host "窗口句柄 = $h"
             if ($h -ne 0) {
+              # 强制把窗口拉到 1600x1000：CI 虚拟屏只有 1024x768 会把窗口裁掉，
+              # 而 PrintWindow 按窗口自身尺寸渲染，可验证「窗口变大后内容是否跟着铺开」
+              [W.U]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, 1600, 1000, 0x0014) | Out-Null
+              Start-Sleep -Seconds 3
               $r = New-Object W.U+RECT
               [W.U]::GetWindowRect($h, [ref]$r) | Out-Null
               $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top

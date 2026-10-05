@@ -173,6 +173,34 @@ public sealed class MainForm : Form
         return p;
     }
 
+    /// <summary>粗略估算文本像素宽（中日韩按 1.35 em，其余 0.6 em；磅→像素 ≈ ×1.34）。</summary>
+    private static float TextPx(string s, float pt)
+    {
+        if (string.IsNullOrEmpty(s)) return 0;
+        float w = 0;
+        foreach (char ch in s) w += (ch > 0x2E80 ? 1.35f : 0.6f) * pt;
+        return w * 1.34f;
+    }
+
+    /// <summary>磁贴数值：长文本自动缩小字号，避免被磁贴裁掉（只在文字变化时重算，避免每秒新建字体）。</summary>
+    private void FitTile(Label v, string text, Color c)
+    {
+        try
+        {
+            if (v.Text != text)
+            {
+                v.Text = text;
+                int avail = (v.Parent != null ? v.Parent.ClientSize.Width : (int)(320 * _s)) - (int)(52 * _s);
+                if (avail < (int)(80 * _s)) avail = (int)(80 * _s);
+                float size = 18f;
+                while (size > 10f && TextPx(text, size * _s) > avail) size -= 0.5f;
+                v.Font = F(size, FontStyle.Bold);
+            }
+            v.ForeColor = c;
+        }
+        catch { }
+    }
+
     private Label SmallLabel(string text, Color c) => new Label
     {
         Text = text, AutoSize = true, ForeColor = c, Font = F(11.5f), BackColor = Color.Transparent,
@@ -243,21 +271,23 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CSide,
             Padding = new Padding((int)(18 * _s), 0, (int)(18 * _s), (int)(14 * _s)),
         };
+        foot.RowCount = 4;
         foot.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 46 * _s));
-        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 46 * _s));
+        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 40 * _s));
+        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 48 * _s));
+        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 48 * _s));
         _sideState = new Label
         {
             Dock = DockStyle.Fill, ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
             Text = "服务：—",
         };
-        foot.Controls.Add(_sideState, 0, 0);
+        foot.Controls.Add(_sideState, 0, 1);
         var stBtn = FlatBtn("设置…", (s, e) => ShowSettings());
         stBtn.Dock = DockStyle.Fill; stBtn.Margin = new Padding(0, 0, 0, (int)(8 * _s));
-        foot.Controls.Add(stBtn, 0, 1);
+        foot.Controls.Add(stBtn, 0, 2);
         var exitBtn = FlatBtn("退出程序", (s, e) => { _reallyExit = true; Close(); });
         exitBtn.Dock = DockStyle.Fill; exitBtn.Margin = Padding.Empty;
-        foot.Controls.Add(exitBtn, 0, 2);
+        foot.Controls.Add(exitBtn, 0, 3);
         side.Controls.Add(foot, 0, 2);
 
         /* ---- 内容区 ---- */
@@ -340,7 +370,9 @@ public sealed class MainForm : Form
         {
             try
             {
-                int w = Math.Max((int)(640 * _s), host.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
+                // 注意：AutoScroll 面板的 ClientSize 已经扣除了滚动条宽度，这里不能再减一次，
+                // 否则右边会多出一条空白（实测约 -47px）。只留 8px 余量。
+                int w = Math.Max((int)(640 * _s), host.ClientSize.Width - 8);
                 inner.Width = w;
                 inner.Height = inner.GetPreferredSize(new Size(w, 0)).Height;
             }
@@ -788,26 +820,17 @@ public sealed class MainForm : Form
             bool bridgeOk = WebBridge.I.BridgeLoaded;
 
             if (_vState != null)
-            {
-                _vState.Text = eng.State;
-                _vState.Font = F(eng.State.Length > 9 ? 13f : 18f, FontStyle.Bold);
-                _vState.ForeColor = eng.State.StartsWith("运行中（已就绪") ? COk
+                FitTile(_vState, eng.State,
+                    eng.State.StartsWith("运行中（已就绪") ? COk
                     : eng.State.StartsWith("运行中") ? CWarn
-                    : eng.State == "已停止" ? CBad : CText;
-            }
+                    : eng.State == "已停止" ? CBad : CText);
             if (_vWeb != null)
-            {
-                _vWeb.Text = !WebBridge.I.IsAttached ? "未初始化"
+                FitTile(_vWeb, !WebBridge.I.IsAttached ? "未初始化"
                     : !bridgeOk ? "桥接脚本缺失"
-                    : (WebBridge.I.IsReady ? "已加载" : "加载中…");
-                _vWeb.ForeColor = WebBridge.I.IsReady && bridgeOk ? COk : CWarn;
-                _vWeb.Font = F(_vWeb.Text.Length > 6 ? 13f : 18f, FontStyle.Bold);
-            }
+                    : (WebBridge.I.IsReady ? "已加载" : "加载中…"),
+                    WebBridge.I.IsReady && bridgeOk ? COk : CWarn);
             if (_vLogin != null)
-            {
-                _vLogin.Text = eng.LoggedIn ? "已登录" : "未登录";
-                _vLogin.ForeColor = eng.LoggedIn ? COk : CBad;
-            }
+                FitTile(_vLogin, eng.LoggedIn ? "已登录" : "未登录", eng.LoggedIn ? COk : CBad);
             if (_vCalls != null) _vCalls.Text = eng.TotalCallsText + (eng.Inflight > 0 ? "，进行中 " + eng.Inflight : "");
             if (_vCtx != null) _vCtx.Text = eng.ContextInfoText;
             if (_vLast != null) _vLast.Text = eng.LastCallInfo;
