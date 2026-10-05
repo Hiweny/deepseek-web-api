@@ -163,7 +163,8 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
     public void UpdateState()
     {
         if (!_serviceRunning) { _state = "已停止"; return; }
-        if (!WebBridge.I.IsReady) _state = "运行中（页面加载中）";
+        if (!WebBridge.I.BridgeLoaded) _state = "运行中（桥接脚本未载入）";
+        else if (!WebBridge.I.IsReady) _state = "运行中（页面加载中）";
         else _state = _lastProbeLoggedIn ? "运行中（已就绪）" : "运行中（等待登录）";
     }
 
@@ -366,6 +367,8 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         o.Set("running", _serviceRunning);
         o.Set("page_ready", WebBridge.I.IsReady);
         o.Set("bridge_attached", WebBridge.I.IsAttached);
+        o.Set("bridge_loaded", WebBridge.I.BridgeLoaded);
+        o.Set("bridge_bytes", (long)WebBridge.I.BridgeBytes);
         o.Set("logged_in", _lastProbeLoggedIn);
         o.Set("inflight", (long)Inflight);
         o.Set("total_calls", (long)TotalCalls);
@@ -398,6 +401,11 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         if (!WebBridge.I.IsAttached)
         {
             res.SendJson(503, ErrJson("网页桥未就绪：请保持本程序运行并在「对话页」登录 DeepSeek 官网。", "server_error"));
+            return;
+        }
+        if (!WebBridge.I.BridgeLoaded)
+        {
+            res.SendJson(503, ErrJson("桥接脚本 bridge.js 未载入（内嵌资源异常）：请确认安装包完整，或把 bridge.js 放到 exe 同目录的 Assets\\ 下后重启。", "server_error"));
             return;
         }
 

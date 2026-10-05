@@ -6,39 +6,52 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace DSWebApi.Desktop.UI;
 
-/// <summary>桌面主窗口：侧边导航 + 控制台 / 对话页 / 设置 / 日志；常驻托盘、看门狗保活。</summary>
+/// <summary>
+/// 桌面主窗口：左侧导航 + 两个页面（控制台 / 对话页），与 APK 的信息架构保持一致。
+/// 全部布局用 TableLayoutPanel/Percent 做响应式，窗口放大时内容等比铺满；
+/// 另有全局「界面缩放」（托盘菜单）用于等比放大字号与控件。
+/// </summary>
 public sealed class MainForm : Form
 {
     /* ---------------- 配色 ---------------- */
-    private static readonly Color CBg = Color.FromArgb(0x0E, 0x11, 0x16);
-    private static readonly Color CSide = Color.FromArgb(0x12, 0x16, 0x1D);
-    private static readonly Color CCard = Color.FromArgb(0x18, 0x1D, 0x26);
-    private static readonly Color CLine = Color.FromArgb(0x27, 0x2E, 0x3A);
-    private static readonly Color CText = Color.FromArgb(0xE7, 0xEA, 0xF0);
-    private static readonly Color CSub = Color.FromArgb(0x98, 0xA2, 0xB2);
-    private static readonly Color CAccent = Color.FromArgb(0x5A, 0x94, 0xF8);
-    private static readonly Color CAccentDim = Color.FromArgb(0x1C, 0x27, 0x3D);
+    private static readonly Color CBg = Color.FromArgb(0x0D, 0x10, 0x15);
+    private static readonly Color CSide = Color.FromArgb(0x11, 0x15, 0x1C);
+    private static readonly Color CCard = Color.FromArgb(0x17, 0x1C, 0x24);
+    private static readonly Color CLine = Color.FromArgb(0x2A, 0x31, 0x3E);
+    private static readonly Color CText = Color.FromArgb(0xEA, 0xED, 0xF3);
+    private static readonly Color CSub = Color.FromArgb(0x93, 0x9E, 0xAF);
+    private static readonly Color CAccent = Color.FromArgb(0x5B, 0x96, 0xFF);
+    private static readonly Color CAccentDim = Color.FromArgb(0x1B, 0x26, 0x3E);
+    private static readonly Color COk = Color.FromArgb(0x3D, 0xD6, 0x8C);
+    private static readonly Color CWarn = Color.FromArgb(0xFF, 0xB4, 0x4D);
+    private static readonly Color CBad = Color.FromArgb(0xFF, 0x6B, 0x6B);
 
     private const string DsUrl = "https://chat.deepseek.com/";
-    private const string WebView2Download = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+    private const string WebHintText = "在此页登录 DeepSeek 官网；登录态由本程序保存，接口调用共用同一会话。";
 
+    /* ---------------- 状态 ---------------- */
     private readonly bool _startMinimized;
+    private float _s = 1f;                       // 界面缩放系数
     private readonly List<Button> _navBtns = new List<Button>();
     private readonly List<Control> _pages = new List<Control>();
-    private readonly Dictionary<Panel, int> _cardHeights = new Dictionary<Panel, int>();
     private int _page;
     private bool _reallyExit;
 
-    private FlowLayoutPanel _consoleFlow;
+    private Panel _content;
+    private Label _toast;
+    private System.Windows.Forms.Timer _toastTimer;
+
     private Panel _webHost;
     private Label _webHint;
     private WebView2 _web;
     private bool _webTried;
+    private Label _zoomText;
     private bool _balloonShown;
 
-    private Label _vState, _vWeb, _vLogin, _vCalls, _vCtx, _vLast, _vBase, _vLan, _vKey;
-    private Label _sideStatus;
-    private TextBox _logBox;
+    private Label _vState, _vWeb, _vLogin;
+    private Label _vBase, _vLan, _vKey;
+    private Label _vCalls, _vCtx, _vLast;
+    private Label _sideState;
 
     private NotifyIcon _tray;
     private ToolStripMenuItem _trayState;
@@ -50,14 +63,16 @@ public sealed class MainForm : Form
     public MainForm(bool startMinimized)
     {
         _startMinimized = startMinimized;
+        _s = Math.Max(0.8f, Math.Min(2.0f, Prefs.UiScalePct / 100f));
+
         Text = Program.AppName + " v" + Program.Version + " · Windows";
         BackColor = CBg;
         ForeColor = CText;
-        Font = new Font("Microsoft YaHei UI", 9F);
-        MinimumSize = new Size(980, 620);
-        Size = new Size(1220, 780);
+        MinimumSize = new Size(1080, 700);
+        Size = new Size(1440, 900);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
+        Font = new Font("Microsoft YaHei UI", 10.5F * _s);
         try { var ico = Icon.ExtractAssociatedIcon(Environment.ProcessPath); if (ico != null) Icon = ico; } catch { }
 
         BuildUi();
@@ -69,6 +84,9 @@ public sealed class MainForm : Form
             try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(RefreshStats)); } catch { }
         };
         WebBridge.I.SetStatusListener(new StatusForwarder(this));
+
+        _toastTimer = new System.Windows.Forms.Timer { Interval = 3200 };
+        _toastTimer.Tick += (s, e) => { _toastTimer.Stop(); try { if (_toast != null) _toast.Visible = false; } catch { } };
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += OnTick;
@@ -84,241 +102,61 @@ public sealed class MainForm : Form
         };
     }
 
-    /* ================= 布局 ================= */
+    /* ================= 字体 / 控件工厂 ================= */
 
-    private void BuildUi()
-    {
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-            BackColor = CBg,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty,
-        };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 214));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Controls.Add(root);
+    private Font F(float size, FontStyle st = FontStyle.Regular) =>
+        new Font("Microsoft YaHei UI", Math.Max(6f, size * _s), st);
 
-        var side = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
-            BackColor = CSide,
-            Margin = Padding.Empty,
-        };
-        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
-        side.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
-        root.Controls.Add(side, 0, 0);
-
-        // 标题
-        var title = new Panel { Dock = DockStyle.Fill, BackColor = CSide };
-        side.Controls.Add(title, 0, 0);
-        try
-        {
-            var ico = Icon;
-            if (ico != null)
-            {
-                var pic = new PictureBox { Left = 18, Top = 22, Width = 30, Height = 30, SizeMode = PictureBoxSizeMode.Zoom, Image = ico.ToBitmap() };
-                title.Controls.Add(pic);
-            }
-        }
-        catch { }        title.Controls.Add(new Label
-        {
-            Text = "DeepSeek Web API", Left = 56, Top = 20, AutoSize = true,
-            ForeColor = CText, Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
-        });
-        title.Controls.Add(new Label
-        {
-            Text = "Windows 桌面版 v" + Program.Version, Left = 56, Top = 46, AutoSize = true,
-            ForeColor = CSub, Font = new Font("Microsoft YaHei UI", 8F),
-        });
-
-        // 导航
-        var nav = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            BackColor = CSide, Padding = new Padding(10, 4, 10, 4),
-        };
-        side.Controls.Add(nav, 0, 1);
-        AddNav(nav, "\uD83C\uDF9B   控制台", 0);
-        AddNav(nav, "\uD83D\uDCAC   对话页", 1);
-        AddNav(nav, "\u2699   设置", 2);
-        AddNav(nav, "\uD83D\uDCC4   日志", 3);
-
-        // 侧栏底部
-        var bottom = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
-            BackColor = CSide, Padding = new Padding(16, 0, 16, 10),
-        };
-        bottom.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        side.Controls.Add(bottom, 0, 2);
-        _sideStatus = new Label { Dock = DockStyle.Fill, ForeColor = CSub, Font = new Font("Microsoft YaHei UI", 8.5F), Text = "服务：—" };
-        bottom.Controls.Add(_sideStatus, 0, 0);
-        var exitBtn = MakeFlatButton("退出程序", (s, e) => { _reallyExit = true; Close(); });
-        exitBtn.Dock = DockStyle.Fill;
-        bottom.Controls.Add(exitBtn, 0, 1);
-
-        // 内容区
-        var content = new Panel { Dock = DockStyle.Fill, BackColor = CBg, Padding = new Padding(20, 16, 16, 16) };
-        root.Controls.Add(content, 1, 0);
-
-        _pages.Add(BuildConsolePage());
-        _pages.Add(BuildWebPage());
-        _pages.Add(BuildSettingsPage());
-        _pages.Add(BuildLogPage());
-        foreach (var p in _pages) { p.Dock = DockStyle.Fill; p.Visible = false; content.Controls.Add(p); }
-        SwitchPage(0);
-    }
-
-    private void AddNav(FlowLayoutPanel nav, string text, int index)
+    private Button FlatBtn(string text, EventHandler onClick, bool primary = false)
     {
         var b = new Button
         {
-            Text = text, Width = 190, Height = 42, FlatStyle = FlatStyle.Flat,
-            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0),
-            BackColor = CSide, ForeColor = CText, Font = new Font("Microsoft YaHei UI", 10F),
-            Cursor = Cursors.Hand, Margin = new Padding(0, 2, 0, 2),
+            Text = text,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size((int)(92 * _s), (int)(38 * _s)),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = primary ? CAccentDim : CCard,
+            ForeColor = primary ? CAccent : CText,
+            Font = F(10.5f),
+            Cursor = Cursors.Hand,
+            Margin = new Padding(0, 0, (int)(10 * _s), 0),
+            Padding = new Padding((int)(10 * _s), 0, (int)(10 * _s), 0),
+            UseVisualStyleBackColor = false,
         };
-        b.FlatAppearance.BorderSize = 0;
-        b.FlatAppearance.MouseOverBackColor = CAccentDim;
-        b.Click += (s, e) => SwitchPage(index);
-        nav.Controls.Add(b);
-        _navBtns.Add(b);
-    }
-
-    private void SwitchPage(int index)
-    {
-        _page = index;
-        for (int i = 0; i < _pages.Count; i++) _pages[i].Visible = i == index;
-        for (int i = 0; i < _navBtns.Count; i++)
-        {
-            _navBtns[i].BackColor = i == index ? CAccentDim : CSide;
-            _navBtns[i].ForeColor = i == index ? CAccent : CText;
-        }
-        if (index == 1 && !_webTried) _ = InitWebAsync();
-        if (index == 3) RefreshLog();
-        RefreshStats();
-    }
-
-    private Button MakeFlatButton(string text, EventHandler onClick)
-    {
-        var b = new Button
-        {
-            Text = text, Height = 34, Width = 150, FlatStyle = FlatStyle.Flat, BackColor = CCard, ForeColor = CText,
-            Font = new Font("Microsoft YaHei UI", 9F), Cursor = Cursors.Hand, Margin = new Padding(0, 4, 8, 4),
-        };
-        b.FlatAppearance.BorderColor = CLine;
+        b.FlatAppearance.BorderSize = 1;
+        b.FlatAppearance.BorderColor = primary ? CAccent : CLine;
         b.FlatAppearance.MouseOverBackColor = CAccentDim;
         if (onClick != null) b.Click += onClick;
         return b;
     }
 
-    /* ---------- 控制台 ---------- */
-
-    private Control BuildConsolePage()
+    /// <summary>圆角卡片容器（统一外观）。</summary>
+    private Panel Card(string title, int height)
     {
-        _consoleFlow = new FlowLayoutPanel
+        var card = new Panel
         {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            AutoScroll = true, BackColor = CBg,
+            BackColor = CCard,
+            Height = (int)(height * _s),
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, (int)(14 * _s)),
         };
-        _consoleFlow.Resize += (s, e) => FitCards();
-
-        _consoleFlow.Controls.Add(new Label
-        {
-            Text = "控制台", AutoSize = true, ForeColor = CText,
-            Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold), Margin = new Padding(2, 0, 0, 2),
-        });
-        _consoleFlow.Controls.Add(new Label
-        {
-            Text = "把 chat.deepseek.com 官网封装成本机 / 局域网的 OpenAI 兼容接口",
-            AutoSize = true, ForeColor = CSub, Font = new Font("Microsoft YaHei UI", 9F), Margin = new Padding(2, 0, 0, 12),
-        });
-
-        var c1 = MakeCard("运行状态", 182);
-        int y = 46;
-        _vState = AddRow(c1, "服务状态", ref y);
-        _vWeb = AddRow(c1, "网页状态", ref y);
-        _vLogin = AddRow(c1, "登录状态", ref y);
-        _vCalls = AddRow(c1, "调用统计", ref y);
-        _vCtx = AddRow(c1, "会话上下文", ref y);
-        _vLast = AddRow(c1, "最近一次", ref y);
-        _consoleFlow.Controls.Add(c1);
-
-        var c2 = MakeCard("接口信息", 134);
-        y = 46;
-        _vBase = AddRow(c2, "Base URL", ref y);
-        _vLan = AddRow(c2, "局域网", ref y);
-        _vKey = AddRow(c2, "API Key", ref y);
-        _consoleFlow.Controls.Add(c2);
-
-        var bar = new FlowLayoutPanel { Height = 46, AutoSize = false, Width = 760, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = new Padding(0, 0, 0, 12) };
-        bar.Controls.Add(MakeFlatButton("复制 Base URL", (s, e) => Copy(Prefs.LanEnabled && ChatEngine.I.LanUrl.Length > 0 ? ChatEngine.I.LanUrl : "http://127.0.0.1:" + ChatEngine.I.Port + "/v1")));
-        bar.Controls.Add(MakeFlatButton("复制 API Key", (s, e) => Copy(Prefs.ApiKey)));
-        bar.Controls.Add(MakeFlatButton("复制本机地址", (s, e) => Copy("http://127.0.0.1:" + ChatEngine.I.Port + "/v1")));
-        bar.Controls.Add(MakeFlatButton("查看健康状态", (s, e) => OpenUrl("http://127.0.0.1:" + ChatEngine.I.Port + "/health")));
-        _consoleFlow.Controls.Add(bar);
-
-        var c3 = MakeCard("常用操作", 100);
-        var p3 = new FlowLayoutPanel { Left = 12, Top = 44, Width = 900, Height = 44, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        p3.Controls.Add(MakeFlatButton("启动服务", (s, e) => { ChatEngine.I.StartAll(Prefs.Port); Toast("服务已启动"); RefreshStats(); }));
-        p3.Controls.Add(MakeFlatButton("停止服务", (s, e) => { ChatEngine.I.StopAll(); Toast("服务已停止"); RefreshStats(); }));
-        p3.Controls.Add(MakeFlatButton("新建对话", (s, e) => NewChat()));
-        p3.Controls.Add(MakeFlatButton("重载网页", (s, e) => ReloadWeb()));
-        c3.Controls.Add(p3);
-        _consoleFlow.Controls.Add(c3);
-
-        var c4 = MakeCard("局域网访问", 128);
-        c4.Controls.Add(new Label
-        {
-            Left = 16, Top = 44, Width = 860, Height = 42, ForeColor = CSub, Font = new Font("Microsoft YaHei UI", 8.5F),
-            Text = "局域网设备把 Base URL 设为上面的「局域网」地址即可（需同一内网）。\n若无法访问：点右侧按钮放行防火墙（会弹 UAC），或手动执行复制的 netsh 命令。",
-        });
-        var p4 = new FlowLayoutPanel { Left = 12, Top = 88, Width = 900, Height = 40, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        p4.Controls.Add(MakeFlatButton("放行防火墙（需管理员）", (s, e) => AddFirewallRule()));
-        p4.Controls.Add(MakeFlatButton("复制 netsh 命令", (s, e) => { Copy(FirewallCmd()); Toast("命令已复制"); }));
-        c4.Controls.Add(p4);
-        _consoleFlow.Controls.Add(c4);
-
-        _consoleFlow.Controls.Add(new Panel { Height = 10, Width = 10 });
-        return _consoleFlow;
-    }
-
-    private void FitCards()
-    {
-        if (_consoleFlow == null || _consoleFlow.IsDisposed) return;
-        int w = Math.Max(460, _consoleFlow.ClientSize.Width - 12);
-        foreach (var kv in _cardHeights)
-        {
-            if (kv.Key.IsDisposed) continue;
-            kv.Key.Width = w;
-            kv.Key.Height = kv.Value;
-        }
-    }
-
-    private Panel MakeCard(string title, int height)
-    {
-        var card = new Panel { BackColor = CCard, Height = height, Width = 760, Margin = new Padding(0, 0, 0, 12) };
         card.Paint += (s, e) =>
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             using var pen = new Pen(CLine);
-            using var path = Rounded(new Rectangle(0, 0, card.Width - 1, card.Height - 1), 10);
+            using var path = Rounded(new Rectangle(0, 0, card.Width - 1, card.Height - 1), (int)(12 * _s));
             g.DrawPath(pen, path);
         };
-        card.Controls.Add(new Label
+        if (title != null)
         {
-            Text = title, Left = 16, Top = 14, AutoSize = true, ForeColor = CAccent,
-            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
-        });
-        _cardHeights[card] = height;
+            card.Controls.Add(new Label
+            {
+                Text = title, Left = (int)(20 * _s), Top = (int)(16 * _s), AutoSize = true,
+                ForeColor = CAccent, Font = F(12f, FontStyle.Bold), BackColor = Color.Transparent,
+            });
+        }
         return card;
     }
 
@@ -335,12 +173,324 @@ public sealed class MainForm : Form
         return p;
     }
 
-    private Label AddRow(Panel card, string name, ref int y)
+    private Label SmallLabel(string text, Color c) => new Label
     {
-        card.Controls.Add(new Label { Text = name, Left = 16, Top = y + 2, AutoSize = true, ForeColor = CSub, Font = new Font("Microsoft YaHei UI", 9F) });
-        var v = new Label { Text = "—", Left = 140, Top = y, AutoSize = true, ForeColor = CText, Font = new Font("Microsoft YaHei UI", 9.5F) };
+        Text = text, AutoSize = true, ForeColor = c, Font = F(10.5f), BackColor = Color.Transparent,
+    };
+
+    /* ================= 布局 ================= */
+
+    private void BuildUi()
+    {
+        _navBtns.Clear();
+        _pages.Clear();
+        SuspendLayout();
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = CBg,
+            Margin = Padding.Empty, Padding = Padding.Empty,
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 252 * _s));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        Controls.Add(root);
+
+        /* ---- 侧边栏 ---- */
+        var side = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CSide, Margin = Padding.Empty,
+        };
+        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 104 * _s));
+        side.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 128 * _s));
+        root.Controls.Add(side, 0, 0);
+
+        var head = new Panel { Dock = DockStyle.Fill, BackColor = CSide };
+        try
+        {
+            var ico = Icon;
+            if (ico != null)
+                head.Controls.Add(new PictureBox
+                {
+                    Left = (int)(22 * _s), Top = (int)(28 * _s), Width = (int)(38 * _s), Height = (int)(38 * _s),
+                    SizeMode = PictureBoxSizeMode.Zoom, Image = ico.ToBitmap(), BackColor = Color.Transparent,
+                });
+        }
+        catch { }
+        head.Controls.Add(new Label
+        {
+            Text = "DeepSeek Web API", Left = (int)(70 * _s), Top = (int)(26 * _s), AutoSize = true,
+            ForeColor = CText, Font = F(13.5f, FontStyle.Bold), BackColor = Color.Transparent,
+        });
+        head.Controls.Add(new Label
+        {
+            Text = "Windows 桌面版 v" + Program.Version, Left = (int)(70 * _s), Top = (int)(56 * _s), AutoSize = true,
+            ForeColor = CSub, Font = F(9.5f), BackColor = Color.Transparent,
+        });
+        side.Controls.Add(head, 0, 0);
+
+        var nav = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            BackColor = CSide, Padding = new Padding((int)(14 * _s), (int)(6 * _s), (int)(14 * _s), 0),
+        };
+        side.Controls.Add(nav, 0, 1);
+        AddNav(nav, "\uD83C\uDF9B   控制台", 0);
+        AddNav(nav, "\uD83D\uDCAC   对话页", 1);
+
+        var foot = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CSide,
+            Padding = new Padding((int)(18 * _s), 0, (int)(18 * _s), (int)(14 * _s)),
+        };
+        foot.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 40 * _s));
+        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 40 * _s));
+        _sideState = new Label
+        {
+            Dock = DockStyle.Fill, ForeColor = CSub, Font = F(9.5f), BackColor = Color.Transparent,
+            Text = "服务：—",
+        };
+        foot.Controls.Add(_sideState, 0, 0);
+        var stBtn = FlatBtn("设置…", (s, e) => ShowSettings());
+        stBtn.Dock = DockStyle.Fill; stBtn.Margin = new Padding(0, 0, 0, (int)(8 * _s));
+        foot.Controls.Add(stBtn, 0, 1);
+        var exitBtn = FlatBtn("退出程序", (s, e) => { _reallyExit = true; Close(); });
+        exitBtn.Dock = DockStyle.Fill; exitBtn.Margin = Padding.Empty;
+        foot.Controls.Add(exitBtn, 0, 2);
+        side.Controls.Add(foot, 0, 2);
+
+        /* ---- 内容区 ---- */
+        _content = new Panel { Dock = DockStyle.Fill, BackColor = CBg, Padding = new Padding((int)(30 * _s), (int)(26 * _s), (int)(30 * _s), (int)(20 * _s)) };
+        root.Controls.Add(_content, 1, 0);
+
+        _pages.Add(BuildConsolePage());
+        _pages.Add(BuildWebPage());
+        foreach (var p in _pages) { p.Dock = DockStyle.Fill; p.Visible = false; _content.Controls.Add(p); }
+
+        _toast = new Label
+        {
+            Dock = DockStyle.Bottom, Height = (int)(34 * _s), TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = CAccent, Font = F(10.5f), Visible = false, BackColor = Color.Transparent,
+        };
+        _content.Controls.Add(_toast);
+        _toast.BringToFront();
+
+        SwitchPage(0, force: true);
+        ResumeLayout(true);
+    }
+
+    private void AddNav(FlowLayoutPanel nav, string text, int index)
+    {
+        var b = new Button
+        {
+            Text = text,
+            Width = (int)(224 * _s),
+            Height = (int)(54 * _s),
+            FlatStyle = FlatStyle.Flat,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding((int)(18 * _s), 0, 0, 0),
+            BackColor = CSide,
+            ForeColor = CText,
+            Font = F(12f),
+            Cursor = Cursors.Hand,
+            Margin = new Padding(0, (int)(4 * _s), 0, (int)(4 * _s)),
+            UseVisualStyleBackColor = false,
+        };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = CAccentDim;
+        b.Click += (s, e) => SwitchPage(index);
+        nav.Controls.Add(b);
+        _navBtns.Add(b);
+    }
+
+    private void SwitchPage(int index, bool force = false)
+    {
+        if (!force && _page == index) return;
+        _page = index;
+        for (int i = 0; i < _pages.Count; i++) _pages[i].Visible = i == index;
+        for (int i = 0; i < _navBtns.Count; i++)
+        {
+            _navBtns[i].BackColor = i == index ? CAccentDim : CSide;
+            _navBtns[i].ForeColor = i == index ? CAccent : CText;
+            _navBtns[i].Font = F(12f, i == index ? FontStyle.Bold : FontStyle.Regular);
+        }
+        if (index == 1 && !_webTried) _ = InitWebAsync();
+        RefreshStats();
+    }
+
+    /* ---------- 控制台页 ---------- */
+
+    private Control BuildConsolePage()
+    {
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = CBg, AutoScroll = true };
+        var inner = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1, BackColor = CBg, Margin = Padding.Empty,
+        };
+        inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        host.Controls.Add(inner);
+        host.HandleCreated += (s, e) => { try { inner.Width = Math.Max((int)(560 * _s), host.ClientSize.Width - 2); } catch { } };
+        host.ClientSizeChanged += (s, e) =>
+        {
+            try { inner.Width = Math.Max((int)(560 * _s), host.ClientSize.Width - 2); } catch { }
+        };
+
+        var title = new Label
+        {
+            Text = "控制台", AutoSize = true, ForeColor = CText, Font = F(21f, FontStyle.Bold),
+            Margin = new Padding(0, 0, 0, (int)(4 * _s)), BackColor = Color.Transparent,
+        };
+        inner.Controls.Add(title);
+        inner.Controls.Add(new Label
+        {
+            Text = "把 chat.deepseek.com 官网封装成本机 / 局域网的 OpenAI 兼容接口",
+            AutoSize = true, ForeColor = CSub, Font = F(10.5f),
+            Margin = new Padding(0, 0, 0, (int)(18 * _s)), BackColor = Color.Transparent,
+        });
+
+        /* 三块状态磁贴 */
+        var tiles = new TableLayoutPanel
+        {
+            ColumnCount = 3, RowCount = 1, Dock = DockStyle.Top, AutoSize = false,
+            Height = (int)(104 * _s), BackColor = CBg, Margin = new Padding(0, 0, 0, (int)(14 * _s)),
+        };
+        for (int i = 0; i < 3; i++) tiles.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        tiles.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _vState = StatTile(tiles, 0, "服务状态", CWarn);
+        _vWeb = StatTile(tiles, 1, "网页 / 桥接", CWarn);
+        _vLogin = StatTile(tiles, 2, "登录状态", CWarn);
+        inner.Controls.Add(tiles);
+
+        /* 接口信息 */
+        var c1 = Card("接口信息", 150);
+        int y = (int)(50 * _s);
+        _vBase = KV(c1, "Base URL（本机）", ref y);
+        _vLan = KV(c1, "Base URL（局域网）", ref y);
+        _vKey = KV(c1, "API Key", ref y);
+        var b1 = new FlowLayoutPanel
+        {
+            Left = (int)(20 * _s), Top = (int)(150 * _s - 52 * _s), Height = (int)(40 * _s),
+            Width = (int)(900 * _s), BackColor = Color.Transparent, WrapContents = false,
+        };
+        b1.Controls.Add(FlatBtn("复制 Base URL", (s, e) => Copy(BaseUrl(true)), true));
+        b1.Controls.Add(FlatBtn("复制 API Key", (s, e) => Copy(Prefs.ApiKey)));
+        b1.Controls.Add(FlatBtn("复制局域网地址", (s, e) => Copy(BaseUrl(false))));
+        c1.Controls.Add(b1);
+        c1.Height = (int)(206 * _s);
+        inner.Controls.Add(Wrap(c1));
+
+        /* 运行数据 */
+        var c2 = Card("运行数据", 150);
+        y = (int)(50 * _s);
+        _vCalls = KV(c2, "调用统计", ref y);
+        _vCtx = KV(c2, "会话上下文", ref y);
+        _vLast = KV(c2, "最近一次", ref y);
+        c2.Height = (int)(148 * _s);
+        inner.Controls.Add(Wrap(c2));
+
+        /* 操作 */
+        var c3 = Card("常用操作", 128);
+        var b3 = new FlowLayoutPanel
+        {
+            Left = (int)(20 * _s), Top = (int)(52 * _s), Height = (int)(40 * _s),
+            Width = (int)(1000 * _s), BackColor = Color.Transparent, WrapContents = false,
+        };
+        b3.Controls.Add(FlatBtn("新建对话", (s, e) => NewChat()));
+        b3.Controls.Add(FlatBtn("重载网页", (s, e) => ReloadWeb()));
+        b3.Controls.Add(FlatBtn("放行防火墙（需管理员）", (s, e) => AddFirewallRule()));
+        b3.Controls.Add(FlatBtn("复制 netsh 命令", (s, e) => { Copy(FirewallCmd()); Toast("netsh 命令已复制"); }));
+        var b3b = new FlowLayoutPanel
+        {
+            Left = (int)(20 * _s), Top = (int)(52 * _s + 48 * _s), Height = (int)(40 * _s),
+            Width = (int)(1000 * _s), BackColor = Color.Transparent, WrapContents = false,
+        };
+        b3b.Controls.Add(FlatBtn("打开设置", (s, e) => ShowSettings()));
+        b3b.Controls.Add(FlatBtn("打开日志", (s, e) => OpenFile(Log.FilePath)));
+        b3b.Controls.Add(FlatBtn("打开数据目录", (s, e) => OpenFolder(Log.Dir)));
+        c3.Controls.Add(b3);
+        c3.Controls.Add(b3b);
+        c3.Height = (int)(152 * _s);
+        inner.Controls.Add(Wrap(c3));
+
+        /* 使用说明 */
+        var c4 = Card("客户端填写（OpenAI 兼容）", 210);
+        var code = new Label
+        {
+            Left = (int)(20 * _s), Top = (int)(52 * _s), Width = (int)(900 * _s), Height = (int)(92 * _s),
+            ForeColor = CText, Font = F(10.5f), BackColor = Color.Transparent,
+            Text = "Base URL : http://127.0.0.1:8787/v1      # 局域网设备换成上面的局域网地址\r\n" +
+                   "API Key  : " + Prefs.ApiKey + "\r\n" +
+                   "Model    : deepseek                     # 任意名称均可",
+        };
+        c4.Controls.Add(code);
+        c4.Controls.Add(new Label
+        {
+            Left = (int)(20 * _s), Top = (int)(148 * _s), Width = (int)(1000 * _s), Height = (int)(48 * _s),
+            ForeColor = CSub, Font = F(9.5f), BackColor = Color.Transparent,
+            Text = "局域网访问需放行防火墙（点上面的按钮或手动执行 netsh）；\r\n" +
+                   "调用前请在「对话页」登录官网，未登录时接口返回 503。",
+        });
+        inner.Controls.Add(Wrap(c4));
+
+        inner.Controls.Add(new Panel { Height = (int)(12 * _s), BackColor = CBg });
+        return host;
+    }
+
+    private Control Wrap(Panel card)
+    {
+        var holder = new Panel { Dock = DockStyle.Top, Height = card.Height, BackColor = CBg, Margin = new Padding(0, 0, 0, (int)(14 * _s)) };
+        card.Dock = DockStyle.Fill;
+        card.Margin = Padding.Empty;
+        holder.Controls.Add(card);
+        return holder;
+    }
+
+    private Label StatTile(TableLayoutPanel parent, int col, string title, Color accent)
+    {
+        var tile = new Panel
+        {
+            Dock = DockStyle.Fill, BackColor = CCard,
+            Margin = new Padding(col == 0 ? 0 : (int)(7 * _s), 0, col == 2 ? 0 : (int)(7 * _s), 0),
+        };
+        tile.Paint += (s, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var pen = new Pen(CLine);
+            using var path = Rounded(new Rectangle(0, 0, tile.Width - 1, tile.Height - 1), (int)(12 * _s));
+            g.DrawPath(pen, path);
+        };
+        tile.Controls.Add(new Label
+        {
+            Text = title, Left = (int)(20 * _s), Top = (int)(18 * _s), AutoSize = true,
+            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
+        });
+        var v = new Label
+        {
+            Text = "—", Left = (int)(20 * _s), Top = (int)(48 * _s), AutoSize = true,
+            ForeColor = accent, Font = F(16.5f, FontStyle.Bold), BackColor = Color.Transparent,
+        };
+        tile.Controls.Add(v);
+        parent.Controls.Add(tile, col, 0);
+        return v;
+    }
+
+    private Label KV(Panel card, string name, ref int y)
+    {
+        card.Controls.Add(new Label
+        {
+            Text = name, Left = (int)(20 * _s), Top = y + (int)(3 * _s), AutoSize = true,
+            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
+        });
+        var v = new Label
+        {
+            Text = "—", Left = (int)(250 * _s), Top = y, AutoSize = true,
+            ForeColor = CText, Font = F(11.5f), BackColor = Color.Transparent,
+        };
         card.Controls.Add(v);
-        y += 22;
+        y += (int)(30 * _s);
         return v;
     }
 
@@ -348,35 +498,54 @@ public sealed class MainForm : Form
 
     private Control BuildWebPage()
     {
-        var host = new Panel { Dock = DockStyle.Fill, BackColor = CBg };
-        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        var host = new Panel { Dock = DockStyle.Fill, BackColor = CBg, AutoScroll = false };
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = CBg };
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 58 * _s));
         grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         host.Controls.Add(grid);
 
-        var bar = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = CBg };
-        bar.Controls.Add(MakeFlatButton("重载网页", (s, e) => ReloadWeb()));
-        bar.Controls.Add(MakeFlatButton("重新注入脚本", (s, e) => { WebBridge.I.InjectBridge(); WebBridge.I.Probe(); Toast("已重新注入 bridge.js"); }));
-        bar.Controls.Add(MakeFlatButton("新建对话", (s, e) => NewChat()));
-        bar.Controls.Add(MakeFlatButton("外部浏览器打开", (s, e) => OpenUrl(DsUrl)));
-        bar.Controls.Add(new Label
+        var bar = new FlowLayoutPanel
         {
-            Text = "在此页登录官网；登录态与 API 共用同一会话。", AutoSize = true, ForeColor = CSub,
-            Font = new Font("Microsoft YaHei UI", 8.5F), Margin = new Padding(10, 12, 0, 0),
-        });
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
+            BackColor = CBg, Padding = new Padding(0, (int)(4 * _s), 0, (int)(10 * _s)),
+        };
+        bar.Controls.Add(FlatBtn("重载网页", (s, e) => ReloadWeb()));
+        bar.Controls.Add(FlatBtn("重新注入脚本", (s, e) => { WebBridge.I.InjectBridge(); WebBridge.I.Probe(); Toast("已重新注入 bridge.js"); }));
+        bar.Controls.Add(FlatBtn("新建对话", (s, e) => NewChat()));
+        bar.Controls.Add(FlatBtn("外部浏览器打开", (s, e) => OpenUrl(DsUrl)));
+        bar.Controls.Add(new Label { Text = "缩放", AutoSize = true, ForeColor = CSub, Font = F(10.5f), Margin = new Padding((int)(14 * _s), (int)(10 * _s), (int)(6 * _s), 0), BackColor = Color.Transparent });
+        bar.Controls.Add(FlatBtn("−", (s, e) => Zoom(-0.1)));
+        _zoomText = new Label { Text = "100%", AutoSize = true, ForeColor = CText, Font = F(10.5f), Margin = new Padding((int)(4 * _s), (int)(10 * _s), (int)(4 * _s), 0), BackColor = Color.Transparent };
+        bar.Controls.Add(_zoomText);
+        bar.Controls.Add(FlatBtn("+", (s, e) => Zoom(0.1)));
         grid.Controls.Add(bar, 0, 0);
 
-        _webHost = new Panel { Dock = DockStyle.Fill, BackColor = CBg };
+        _webHost = new Panel { Dock = DockStyle.Fill, BackColor = CCard, Padding = new Padding(1) };
         grid.Controls.Add(_webHost, 0, 1);
 
         _webHint = new Label
         {
             Dock = DockStyle.Fill, ForeColor = CSub, TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Microsoft YaHei UI", 10F),
-            Text = "正在初始化 WebView2…",
+            Font = F(11f), Text = WebHintText + "\r\n\r\n正在初始化 WebView2…", BackColor = CCard,
         };
         _webHost.Controls.Add(_webHint);
+
+        if (_web != null) { _webHost.Controls.Add(_web); _web.Dock = DockStyle.Fill; _web.BringToFront(); }
         return host;
+    }
+
+    private void Zoom(double delta)
+    {
+        try
+        {
+            if (_web == null) return;
+            double z = _web.ZoomFactor + delta;
+            if (z < 0.5) z = 0.5;
+            if (z > 2.5) z = 2.5;
+            _web.ZoomFactor = z;
+            if (_zoomText != null) _zoomText.Text = Math.Round(z * 100) + "%";
+        }
+        catch { }
     }
 
     private async Task InitWebAsync()
@@ -397,9 +566,8 @@ public sealed class MainForm : Form
 
         try
         {
-            _webHint.Text = "正在加载 DeepSeek 官网…";
-            _webHint.Visible = true;
-            _web = new WebView2 { Dock = DockStyle.Fill };
+            try { _webHint.Text = "正在加载 DeepSeek 官网…"; _webHint.Visible = true; _webHint.BringToFront(); } catch { }
+            _web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = CCard };
             _webHost.Controls.Add(_web);
             _web.BringToFront();
 
@@ -423,9 +591,12 @@ public sealed class MainForm : Form
             {
                 WebBridge.I.MarkPageLoaded(ev.IsSuccess);
                 Log.Write("页面加载 " + (ev.IsSuccess ? "成功" : "失败") + " url=" + core.Source);
-                try { _webHint.Visible = false; } catch { }
-                WebBridge.I.InjectBridge();
-                WebBridge.I.Probe();
+                if (ev.IsSuccess)
+                {
+                    try { _webHint.Visible = false; } catch { }
+                    WebBridge.I.InjectBridge();
+                    WebBridge.I.Probe();
+                }
                 RefreshStats();
             };
             core.ProcessFailed += (s, ev) =>
@@ -462,6 +633,7 @@ public sealed class MainForm : Form
     {
         try
         {
+            if (_web != null) _web.Visible = false;
             _webHint.Text = text;
             _webHint.Visible = true;
             _webHint.BringToFront();
@@ -471,189 +643,14 @@ public sealed class MainForm : Form
 
     private void ShowWebUnavailable()
     {
-        ShowWebHint("未检测到 Microsoft Edge WebView2 运行时。\n\n" +
-                    "程序依赖 WebView2 驱动 DeepSeek 官网（HTTP 接口仍在运行，但调用会返回 503）。\n" +
-                    "请安装「Evergreen 运行时」后重启本程序。\n\n" +
-                    "Win11 / 新版 Win10 通常已内置。");
-        try
-        {
-            var b = MakeFlatButton("打开 WebView2 下载页", (s, e) => OpenUrl(WebView2Download));
-            b.Width = 190; b.Left = 20; b.Top = 20;
-            b.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
-            b.Top = Math.Max(20, _webHost.ClientSize.Height - 60);
-            _webHost.Resize += (s, e) => { try { b.Top = Math.Max(20, _webHost.ClientSize.Height - 60); } catch { } };
-            _webHost.Controls.Add(b);
-            b.BringToFront();
-        }
-        catch { }
+        ShowWebHint("未检测到 Microsoft Edge WebView2 运行时。\r\n\r\n" +
+                    "本程序用 WebView2 驱动 DeepSeek 官网（HTTP 接口仍在运行，但调用会返回 503）。\r\n" +
+                    "请安装「Evergreen 运行时」后重启本程序。\r\n\r\n" +
+                    "Win11 / 新版 Win10 通常已内置。\r\n\r\n" +
+                    "下载页：https://developer.microsoft.com/microsoft-edge/webview2/");
     }
 
-    /* ---------- 设置 ---------- */
-
-    private Control BuildSettingsPage()
-    {
-        var flow = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            AutoScroll = true, BackColor = CBg,
-        };
-        flow.Resize += (s, e) => FitCards();
-
-        flow.Controls.Add(new Label { Text = "设置", AutoSize = true, ForeColor = CText, Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold), Margin = new Padding(2, 0, 0, 10) });
-
-        var c1 = MakeCard("接口设置", 196);
-        int y = 46;
-        AddEditRow(c1, "端口", ref y, () => Prefs.Port.ToString(), v =>
-        {
-            if (int.TryParse(v, out var p) && p > 0 && p < 65536) { Prefs.Port = p; Prefs.Remove("port_active"); Toast("端口已保存，重启服务后生效"); }
-            else Toast("端口无效");
-        });
-        AddEditRow(c1, "API Key", ref y, () => Prefs.ApiKey, v => { Prefs.Set("api_key", v); RefreshStats(); });
-        AddEditRow(c1, "超时（秒）", ref y, () => Prefs.TimeoutSec.ToString(), v => { if (int.TryParse(v, out var t) && t > 5) Prefs.TimeoutSec = t; });
-        AddCycleRow(c1, "思考策略", ref y, () => Prefs.ThinkingMode, v => { Prefs.ThinkingMode = v; ApplyModes(); }, new[] { "auto", "on", "off" });
-        AddCycleRow(c1, "搜索策略", ref y, () => Prefs.SearchMode, v => { Prefs.SearchMode = v; ApplyModes(); }, new[] { "auto", "on", "off" });
-        flow.Controls.Add(c1);
-
-        var c2 = MakeCard("会话与上下文", 176);
-        y = 46;
-        AddSwitchRow(c2, "无状态模式", "每次发送完整对话（不依赖官网会话记忆）", ref y, () => Prefs.Stateless, v => Prefs.Stateless = v);
-        AddSwitchRow(c2, "自动新开对话", "上下文达阈值时自动新建对话（旧会话保留）", ref y, () => Prefs.AutoNewChat, v => Prefs.AutoNewChat = v);
-        AddEditRow(c2, "上下文上限（tokens）", ref y, () => Prefs.ContextTokens.ToString(), v => { if (int.TryParse(v, out var t) && t >= 8000) Prefs.ContextTokens = t; });
-        AddEditRow(c2, "新对话阈值（%）", ref y, () => Prefs.NewChatThreshold.ToString(), v => { if (int.TryParse(v, out var t) && t >= 10 && t <= 100) Prefs.NewChatThreshold = t; });
-        flow.Controls.Add(c2);
-
-        var c3 = MakeCard("桌面行为", 176);
-        y = 46;
-        AddSwitchRow(c3, "关闭窗口即最小化到托盘", "服务继续在后台运行（推荐）", ref y, () => Prefs.CloseToTray, v => Prefs.CloseToTray = v);
-        AddSwitchRow(c3, "开机自动启动", "登录 Windows 后自动运行并最小化到托盘", ref y, () => Prefs.AutoStart, v =>
-        {
-            Prefs.AutoStart = v;
-            AutoRun.Set(v, Environment.ProcessPath);
-        });
-        AddSwitchRow(c3, "允许局域网访问", "监听 0.0.0.0（关闭后仅本机）", ref y, () => Prefs.LanEnabled, v => { Prefs.LanEnabled = v; Toast("重启服务后生效"); });
-        flow.Controls.Add(c3);
-
-        var c4 = MakeCard("高级", 108);
-        var p4 = new FlowLayoutPanel { Left = 12, Top = 44, Width = 900, Height = 44, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        p4.Controls.Add(MakeFlatButton("打开数据目录", (s, e) => OpenFolder(Log.Dir)));
-        p4.Controls.Add(MakeFlatButton("打开设置文件", (s, e) => OpenFile(Path.Combine(Log.Dir, "settings.json"))));
-        p4.Controls.Add(MakeFlatButton("重置上下文计数", (s, e) => { ChatEngine.I.ResetContext(); Toast("上下文计数已重置"); }));
-        c4.Controls.Add(p4);
-        flow.Controls.Add(c4);
-
-        flow.Controls.Add(new Panel { Height = 10, Width = 10 });
-        return flow;
-    }
-
-    private void AddEditRow(Panel card, string name, ref int y, Func<string> get, Action<string> set)
-    {
-        card.Controls.Add(new Label { Text = name, Left = 16, Top = y + 2, AutoSize = true, ForeColor = CSub, Font = new Font("Microsoft YaHei UI", 9F) });
-        var v = new Label { Text = get(), Left = 300, Top = y, AutoSize = true, ForeColor = CAccent, Font = new Font("Microsoft YaHei UI", 9.5F) };
-        var edit = MakeFlatButton("修改", (s, e) =>
-        {
-            string r = InputBox.Show(this, "修改 " + name, get());
-            if (r == null) return;
-            set(r.Trim());
-            v.Text = get();
-            RefreshStats();
-        });
-        edit.Left = 470; edit.Top = y - 4; edit.Width = 62; edit.Height = 24;
-        card.Controls.Add(v);
-        card.Controls.Add(edit);
-        y += 26;
-    }
-
-    private void AddCycleRow(Panel card, string name, ref int y, Func<string> get, Action<string> set, string[] values)
-    {
-        card.Controls.Add(new Label { Text = name, Left = 16, Top = y + 2, AutoSize = true, ForeColor = CSub, Font = new Font("Microsoft YaHei UI", 9F) });
-        var v = new Label { Text = get(), Left = 300, Top = y, AutoSize = true, ForeColor = CAccent, Font = new Font("Microsoft YaHei UI", 9.5F) };
-        var b = MakeFlatButton("切换", (s, e) =>
-        {
-            string cur = get();
-            int idx = Array.IndexOf(values, cur);
-            string next = values[(idx + 1 + values.Length) % values.Length];
-            set(next);
-            v.Text = get();
-        });
-        b.Left = 470; b.Top = y - 4; b.Width = 62; b.Height = 24;
-        card.Controls.Add(v);
-        card.Controls.Add(b);
-        y += 26;
-    }
-
-    private void AddSwitchRow(Panel card, string name, string desc, ref int y, Func<bool> get, Action<bool> set)
-    {
-        card.Controls.Add(new Label { Text = name, Left = 16, Top = y + 1, AutoSize = true, ForeColor = CText, Font = new Font("Microsoft YaHei UI", 9F) });
-        card.Controls.Add(new Label { Text = desc, Left = 300, Top = y + 3, AutoSize = true, ForeColor = CSub, Font = new Font("Microsoft YaHei UI", 8F) });
-        bool on = get();
-        var cb = new CheckBox
-        {
-            Appearance = Appearance.Button, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleCenter,
-            Left = 470, Top = y - 2, Width = 64, Height = 24, Checked = on,
-            BackColor = on ? CAccentDim : CCard, ForeColor = on ? CAccent : CSub,
-            Text = on ? "已开启" : "已关闭",
-        };
-        cb.FlatAppearance.BorderColor = CLine;
-        cb.CheckedChanged += (s, e) =>
-        {
-            try
-            {
-                set(cb.Checked);
-                cb.Text = cb.Checked ? "已开启" : "已关闭";
-                cb.BackColor = cb.Checked ? CAccentDim : CCard;
-                cb.ForeColor = cb.Checked ? CAccent : CSub;
-            }
-            catch (Exception ex) { Toast("设置失败：" + ex.Message); }
-        };
-        card.Controls.Add(cb);
-        y += 30;
-    }
-
-    private void ApplyModes() => WebBridge.I.Configure(Prefs.ThinkingMode, Prefs.SearchMode);
-
-    /* ---------- 日志 ---------- */
-
-    private Control BuildLogPage()
-    {
-        var host = new Panel { Dock = DockStyle.Fill, BackColor = CBg };
-        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        host.Controls.Add(grid);
-
-        var bar = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = CBg };
-        bar.Controls.Add(MakeFlatButton("刷新", (s, e) => RefreshLog()));
-        bar.Controls.Add(MakeFlatButton("清空界面", (s, e) => { Log.Clear(); RefreshLog(); }));
-        bar.Controls.Add(MakeFlatButton("打开日志文件", (s, e) => OpenFile(Log.FilePath)));
-        bar.Controls.Add(MakeFlatButton("打开数据目录", (s, e) => OpenFolder(Log.Dir)));
-        bar.Controls.Add(MakeFlatButton("复制全部", (s, e) => { Copy(_logBox.Text); Toast("日志已复制"); }));
-        grid.Controls.Add(bar, 0, 0);
-
-        _logBox = new TextBox
-        {
-            Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both,
-            WordWrap = false, BackColor = Color.FromArgb(0x0B, 0x0E, 0x12),
-            ForeColor = Color.FromArgb(0xC8, 0xD0, 0xDC), Font = new Font("Consolas", 9F), BorderStyle = BorderStyle.None,
-        };
-        grid.Controls.Add(_logBox, 0, 1);
-        return host;
-    }
-
-    private void RefreshLog()
-    {
-        try
-        {
-            if (_logBox == null || _logBox.IsDisposed) return;
-            string t = Log.Text();
-            if (_logBox.Text == t) return;
-            _logBox.Text = t;
-            _logBox.SelectionStart = _logBox.TextLength;
-            _logBox.ScrollToCaret();
-        }
-        catch { }
-    }
-
-    /* ---------- 托盘 ---------- */
+    /* ================= 托盘 / 单实例 ================= */
 
     private void BuildTray()
     {
@@ -667,13 +664,23 @@ public sealed class MainForm : Form
         menu.Items.Add("显示主界面", null, (s, e) => ShowFromTray());
         menu.Items.Add("打开对话页", null, (s, e) => { ShowFromTray(); SwitchPage(1); });
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("复制 Base URL", null, (s, e) => Copy(Prefs.LanEnabled && ChatEngine.I.LanUrl.Length > 0 ? ChatEngine.I.LanUrl : "http://127.0.0.1:" + ChatEngine.I.Port + "/v1"));
+        menu.Items.Add("复制 Base URL", null, (s, e) => Copy(BaseUrl(true)));
         menu.Items.Add("复制 API Key", null, (s, e) => Copy(Prefs.ApiKey));
-        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("新建对话", null, (s, e) => NewChat());
         menu.Items.Add("重载网页", null, (s, e) => ReloadWeb());
+        var scale = new ToolStripMenuItem("界面缩放");
+        foreach (var pct in new[] { 100, 115, 130, 150 })
+        {
+            int v = pct;
+            var item = new ToolStripMenuItem(v + "%", null, (s, e) => ApplyScale(v)) { Checked = (int)(_s * 100) == v };
+            scale.DropDownItems.Add(item);
+        }
+        menu.Items.Add(scale);
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("启动服务", null, (s, e) => { ChatEngine.I.StartAll(Prefs.Port); RefreshStats(); });
         menu.Items.Add("停止服务", null, (s, e) => { ChatEngine.I.StopAll(); RefreshStats(); });
+        menu.Items.Add("打开设置…", null, (s, e) => { ShowFromTray(); ShowSettings(); });
+        menu.Items.Add("打开日志", null, (s, e) => OpenFile(Log.FilePath));
         menu.Items.Add(new ToolStripSeparator());
         _trayState = new ToolStripMenuItem("状态：—") { Enabled = false };
         menu.Items.Add(_trayState);
@@ -683,6 +690,28 @@ public sealed class MainForm : Form
         _tray.DoubleClick += (s, e) => ShowFromTray();
         _tray.BalloonTipTitle = Program.AppName;
         _tray.BalloonTipText = "已缩小到系统托盘，服务继续运行；双击图标可再次打开。";
+    }
+
+    private void ApplyScale(int pct)
+    {
+        try
+        {
+            Prefs.UiScalePct = pct;
+            _s = pct / 100f;
+            // 重建界面，但保留 WebView2 实例（重新挂载，不丢失登录态）
+            if (_web != null && _web.Parent != null) _web.Parent.Controls.Remove(_web);
+            SuspendLayout();
+            var old = new List<Control>();
+            foreach (Control c in Controls) old.Add(c);
+            Controls.Clear();
+            foreach (var c in old) { try { c.Dispose(); } catch { } }
+            BuildUi();
+            ResumeLayout(true);
+            _content?.PerformLayout();
+            Invalidate(true);
+            Toast("界面缩放已切换为 " + pct + "%");
+        }
+        catch (Exception e) { Log.Write("切换界面缩放失败: " + e.Message); }
     }
 
     private void MinimizeToTray(bool balloon)
@@ -734,15 +763,14 @@ public sealed class MainForm : Form
         catch { }
     }
 
-    /* ---------- 定时刷新 ---------- */
+    /* ================= 定时刷新 ================= */
 
     private void OnTick(object sender, EventArgs e)
     {
         _tick++;
         if (_tick % 5 == 0) WebBridge.I.Probe();
-        if (_tick % 60 == 0 && WebBridge.I.IsAttached) WebBridge.I.InjectBridge();
+        if (_tick % 30 == 0 && WebBridge.I.IsAttached) WebBridge.I.InjectBridge();
         RefreshStats();
-        if (_page == 3 && _tick % 3 == 0) RefreshLog();
     }
 
     private void RefreshStats()
@@ -750,16 +778,36 @@ public sealed class MainForm : Form
         try
         {
             var eng = ChatEngine.I;
-            if (_vState != null) _vState.Text = eng.State;
-            if (_vWeb != null) _vWeb.Text = WebBridge.I.IsAttached ? (WebBridge.I.IsReady ? "已加载（bridge 就绪）" : "加载中…") : "未初始化";
-            if (_vLogin != null) _vLogin.Text = eng.IsLoggedInText;
+            bool bridgeOk = WebBridge.I.BridgeLoaded;
+
+            if (_vState != null)
+            {
+                _vState.Text = eng.State;
+                _vState.ForeColor = eng.State.StartsWith("运行中（已就绪") ? COk
+                    : eng.State.StartsWith("运行中") ? CWarn
+                    : eng.State == "已停止" ? CBad : CText;
+            }
+            if (_vWeb != null)
+            {
+                _vWeb.Text = !WebBridge.I.IsAttached ? "未初始化"
+                    : !bridgeOk ? "桥接脚本缺失"
+                    : (WebBridge.I.IsReady ? "已加载" : "加载中…");
+                _vWeb.ForeColor = WebBridge.I.IsReady && bridgeOk ? COk : CWarn;
+            }
+            if (_vLogin != null)
+            {
+                _vLogin.Text = eng.LoggedIn ? "已登录" : "未登录";
+                _vLogin.ForeColor = eng.LoggedIn ? COk : CBad;
+            }
             if (_vCalls != null) _vCalls.Text = eng.TotalCallsText + (eng.Inflight > 0 ? "，进行中 " + eng.Inflight : "");
             if (_vCtx != null) _vCtx.Text = eng.ContextInfoText;
             if (_vLast != null) _vLast.Text = eng.LastCallInfo;
             if (_vBase != null) _vBase.Text = "http://127.0.0.1:" + eng.Port + "/v1";
-            if (_vLan != null) _vLan.Text = eng.LanUrl;
+            if (_vLan != null) _vLan.Text = string.IsNullOrEmpty(eng.LanUrl) ? "—" : eng.LanUrl;
             if (_vKey != null) _vKey.Text = Prefs.ApiKey;
-            if (_sideStatus != null) _sideStatus.Text = "服务：" + eng.State + "\n本机：" + eng.Port + " · 局域网：" + (Prefs.LanEnabled ? "开" : "关");
+            if (_sideState != null)
+                _sideState.Text = "服务：" + eng.State + "\r\n端口：" + (eng.Port > 0 ? eng.Port : Prefs.Port)
+                    + " · 局域网：" + (Prefs.LanEnabled ? "开" : "关");
             if (_tray != null && _tray.Visible)
             {
                 _tray.Text = Program.AppName + " · " + (eng.LanUrl.Length > 0 ? eng.LanUrl : ("127.0.0.1:" + eng.Port));
@@ -769,7 +817,13 @@ public sealed class MainForm : Form
         catch { }
     }
 
-    /* ---------- 行为 ---------- */
+    /* ================= 行为 ================= */
+
+    private string BaseUrl(bool local)
+    {
+        if (!local && Prefs.LanEnabled && ChatEngine.I.LanUrl.Length > 0) return ChatEngine.I.LanUrl;
+        return "http://127.0.0.1:" + (ChatEngine.I.Port > 0 ? ChatEngine.I.Port : Prefs.Port) + "/v1";
+    }
 
     private void NewChat()
     {
@@ -782,10 +836,22 @@ public sealed class MainForm : Form
     {
         try
         {
-            if (_web?.CoreWebView2 != null) { _web.CoreWebView2.Navigate(DsUrl); Toast("正在重载官网…"); }
+            if (_web?.CoreWebView2 != null)
+            {
+                try { _web.Visible = true; } catch { }
+                _web.CoreWebView2.Navigate(DsUrl);
+                Toast("正在重载官网…");
+            }
             else { _webTried = false; _ = InitWebAsync(); }
         }
         catch (Exception e) { Toast("重载失败：" + e.Message); }
+    }
+
+    private void ShowSettings()
+    {
+        using var dlg = new SettingsDialog(_s);
+        dlg.ShowDialog(this);
+        RefreshStats();
     }
 
     private string FirewallCmd()
@@ -844,7 +910,18 @@ public sealed class MainForm : Form
     private void Toast(string msg)
     {
         Log.Write("[界面] " + msg);
-        try { _tray?.ShowBalloonTip(2000, Program.AppName, msg, ToolTipIcon.Info); } catch { }
+        try
+        {
+            if (_toast != null)
+            {
+                _toast.Text = "• " + msg;
+                _toast.Visible = true;
+                _toast.BringToFront();
+                _toastTimer?.Stop();
+                _toastTimer?.Start();
+            }
+        }
+        catch { }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

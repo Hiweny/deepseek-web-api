@@ -35,8 +35,8 @@ jobs:
       - name: Build (Release)
         run: dotnet build -c Release --no-restore
 
-      # ---------- 1) 核心引擎自检（解析/转义/正文不吞内容）----------
-      - name: Self test (engine)
+      # ---------- 1) 核心引擎自检（解析/转义/正文不吞内容/bridge 资源）----------
+      - name: Self test (engine + bridge resource)
         shell: pwsh
         run: |
           $exe = (Resolve-Path "bin\Release\net8.0-windows\win-x64\DeepSeekWebAPI.exe").Path
@@ -47,6 +47,8 @@ jobs:
           Write-Host "selftest exit = $($p.ExitCode)"
           if (Test-Path $slog) { Get-Content $slog } else { Write-Host "!! 未生成 selftest.log" }
           if ($p.ExitCode -ne 0) { throw "引擎自检失败（exit=$($p.ExitCode)）" }
+          $txt = if (Test-Path $slog) { Get-Content $slog -Raw } else { "" }
+          if ($txt -notmatch 'PASS\s+S bridge\.js') { throw "自检里 bridge.js 内嵌资源用例未通过（曾导致 API 全部 NO_BRIDGE）" }
 
       # ---------- 2) 单文件发布 ----------
       - name: Publish single-file exe
@@ -60,8 +62,8 @@ jobs:
           if (-not (Test-Path $exe)) { throw "未生成单文件 exe" }
           Write-Host ("exe size = {0:N1} MB" -f ((Get-Item $exe).Length / 1MB))
 
-      # ---------- 3) 真机冒烟测试：启动 / 托盘 / HTTP 探活 / 主窗口 ----------
-      - name: Smoke test (launch + HTTP probe)
+      # ---------- 3) 真机冒烟：启动 / 窗口 / HTTP 探活 / bridge 真正载入 ----------
+      - name: Smoke test (launch + HTTP probe + bridge loaded)
         shell: pwsh
         run: |
           $exe = Join-Path $PWD "publish\DeepSeekWebAPI.exe"
@@ -76,12 +78,13 @@ jobs:
             if (Test-Path $log) { Get-Content $log }
             throw "程序启动后立即退出"
           }
-          $healthOk = $false
+          $healthOk = $false; $health = ""
           for ($i = 0; $i -lt 12; $i++) {
             try {
               $r = Invoke-WebRequest -Uri "http://127.0.0.1:8787/health" -TimeoutSec 5 -UseBasicParsing
-              Write-Host "GET /health -> $($r.StatusCode) $($r.Content)"
-              if ($r.Content -like '*"status":"ok"*') { $healthOk = $true; break }
+              $health = $r.Content
+              Write-Host "GET /health -> $($r.StatusCode) $health"
+              if ($health -like '*"status":"ok"*') { $healthOk = $true; break }
             } catch { Write-Host "等待服务就绪 ($i): $($_.Exception.Message)" }
             Start-Sleep -Seconds 3
           }
@@ -90,13 +93,22 @@ jobs:
           Write-Host "MainWindowHandle = $($p.MainWindowHandle)"
           if (-not $healthOk) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw "HTTP /health 未就绪" }
 
-          # 鉴权 + 模型列表
+          # 关键回归：bridge.js 必须真的载入（bytes 远大于 0）
+          if ($health -notlike '*"bridge_loaded":true*') {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "bridge.js 未载入（health 里 bridge_loaded 不是 true）：$health"
+          }
+          if ($health -match '"bridge_bytes":(\d+)') {
+            $bytes = [int]$Matches[1]
+            Write-Host "bridge_bytes = $bytes"
+            if ($bytes -lt 5000) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw "bridge.js 内容异常（$bytes 字节）" }
+          }
+
           try {
             $m = Invoke-WebRequest -Uri "http://127.0.0.1:8787/v1/models" -Headers @{ Authorization = "Bearer sk-deepseek" } -TimeoutSec 5 -UseBasicParsing
             Write-Host "GET /v1/models -> $($m.StatusCode) $($m.Content)"
           } catch { Write-Host "!! /v1/models 失败: $($_.Exception.Message)" }
 
-          # 无 Key 应 401
           try {
             $bad = Invoke-WebRequest -Uri "http://127.0.0.1:8787/v1/models" -TimeoutSec 5 -UseBasicParsing
             Write-Host "!! 未带 Key 竟然成功: $($bad.StatusCode)"
@@ -104,22 +116,43 @@ jobs:
             Write-Host "未鉴权请求被拒（预期 401）: $($_.Exception.Response.StatusCode.value__)"
           }
 
-          # chat/completions 在未登录时应返回 503（而非崩溃）
-          try {
-            $c = Invoke-WebRequest -Uri "http://127.0.0.1:8787/v1/chat/completions" -Method POST `
-                 -Headers @{ Authorization = "Bearer sk-deepseek" } -ContentType "application/json" `
-                 -Body '{"model":"deepseek","messages":[{"role":"user","content":"hi"}]}' -TimeoutSec 20 -UseBasicParsing
-            Write-Host "chat -> $($c.StatusCode) $($c.Content)"
-          } catch {
-            Write-Host "chat 返回: $($_.Exception.Response.StatusCode.value__)（未登录时预期 503/502）"
-          }
-
           if (Test-Path $log) { Write-Host "----- 冒烟结束后的 app.log -----"; Get-Content $log }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
           Write-Host "SMOKE_OK"
 
-      # ---------- 4) 收集产物 ----------
+      # ---------- 4) 端到端真机测试：自动登录 + 通过本地接口真实对话 ----------
+      - name: E2E (login + real chat completion)
+        if: ${{ secrets.DS_TEST_PHONE != '' }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          DS_E2E_PHONE: ${{ secrets.DS_TEST_PHONE }}
+          DS_E2E_PASSWORD: ${{ secrets.DS_TEST_PASSWORD }}
+        run: |
+          $exe = Join-Path $PWD "publish\DeepSeekWebAPI.exe"
+          $log = Join-Path $env:LOCALAPPDATA "DeepSeekWebAPI\app.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
+          Write-Host "启动端到端测试（凭据走环境变量，不打印）"
+          $p = Start-Process -FilePath $exe -ArgumentList '--e2e' -PassThru
+          if (-not $p.WaitForExit(900000)) { Write-Host "!! 超时"; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          Write-Host "e2e exit = $($p.ExitCode)"
+          if (Test-Path $log) { Get-Content $log }
+          New-Item -ItemType Directory -Force e2e-out | Out-Null
+          $dir = Join-Path $env:LOCALAPPDATA "DeepSeekWebAPI"
+          Copy-Item "$dir\*.log" e2e-out -ErrorAction SilentlyContinue
+          Copy-Item "$dir\*.png" e2e-out -ErrorAction SilentlyContinue
+          if ((Test-Path $log) -and ((Get-Content $log -Raw) -match 'E2E_OK')) { Write-Host "E2E_RESULT=OK" } else { Write-Host "E2E_RESULT=FAIL" }
+
+      - name: Upload E2E diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diagnostics
+          path: desktop/DSWebApi.Desktop/e2e-out/*
+          if-no-files-found: ignore
+
+      # ---------- 5) 收集产物 ----------
       - name: Collect artifacts
         shell: pwsh
         run: |

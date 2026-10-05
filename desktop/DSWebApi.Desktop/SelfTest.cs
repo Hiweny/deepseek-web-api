@@ -271,6 +271,15 @@ internal static class SelfTest
             Check("P 过度转义 arguments 仍还原为对象", ChainOk(p, tools, out var e7), e7);
         }
 
+        // S) 关键回归：bridge.js 内嵌资源必须能载入（曾因逻辑名不匹配导致 0 字节、API 全部 NO_BRIDGE）
+        {
+            Log.Init();
+            string js = Program.LoadEmbedded("bridge.js");
+            Check("S bridge.js 内嵌资源可载入且非空",
+                js.Length > 5000 && js.Contains("window.DSKB") && js.Contains("__DSWB_LOADED"),
+                "bytes=" + js.Length);
+        }
+
         Say("--- 自检结果: " + _pass + " 通过 / " + _fail + " 失败 ---");
 
         try

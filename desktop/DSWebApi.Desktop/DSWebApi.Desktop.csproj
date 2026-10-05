@@ -38,7 +38,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Assets\bridge.js" />
+    <!-- 必须显式指定 LogicalName：默认逻辑名是 RootNamespace+目录(DSWebApi.Desktop.Assets.bridge.js)，
+         一旦 AssemblyName/RootNamespace 变化就会读不到，曾导致 bridge.js 0 字节、API 全部 NO_BRIDGE。 -->
+    <EmbeddedResource Include="Assets\bridge.js" LogicalName="bridge.js" />
+    <EmbeddedResource Include="Assets\e2e-login.js" LogicalName="e2e-login.js" />
+    <None Include="Assets\bridge.js" CopyToOutputDirectory="PreserveNewest" Link="Assets\bridge.js" />
   </ItemGroup>
 
 </Project>

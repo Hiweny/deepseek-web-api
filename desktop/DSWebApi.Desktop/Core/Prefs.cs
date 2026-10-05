@@ -89,4 +89,6 @@ public static class Prefs
     public static bool AutoStart { get => GetBool("autostart", false); set => Set("autostart", value); }
     public static bool LanEnabled { get => GetBool("lan_enabled", true); set => Set("lan_enabled", value); }
     public static bool StartOnBootServer { get => GetBool("server_on_boot", true); set => Set("server_on_boot", value); }
+    /// <summary>界面缩放百分比（等比放大整套 UI 的字号与控件）。</summary>
+    public static int UiScalePct { get => GetInt("ui_scale_pct", 100); set => Set("ui_scale_pct", value); }
 }

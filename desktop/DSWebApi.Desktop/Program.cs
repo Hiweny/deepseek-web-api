@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using DSWebApi.Desktop.Core;
 using DSWebApi.Desktop.UI;
 
@@ -30,6 +31,15 @@ internal static class Program
         if (args.Any(a => a.Equals("--version", StringComparison.OrdinalIgnoreCase)))
         {
             Console.WriteLine(AppName + " " + Version);
+            return;
+        }
+        int e2eAt = Array.FindIndex(args, a => a.Equals("--e2e", StringComparison.OrdinalIgnoreCase));
+        if (e2eAt >= 0)
+        {
+            // 优先从命令行取；CI 用环境变量传入（避免密码出现在进程命令行里）
+            string phone = e2eAt + 1 < args.Length ? args[e2eAt + 1] : Environment.GetEnvironmentVariable("DS_E2E_PHONE");
+            string pwd = e2eAt + 2 < args.Length ? args[e2eAt + 2] : Environment.GetEnvironmentVariable("DS_E2E_PASSWORD");
+            Environment.ExitCode = E2ETest.Run(phone, pwd);
             return;
         }
 
@@ -68,8 +78,10 @@ internal static class Program
         }
 
         Prefs.Load();
-        WebBridge.I.BridgeJs = LoadEmbedded("Assets.bridge.js");
+        WebBridge.I.BridgeJs = LoadEmbedded("bridge.js");
         Log.Write("bridge.js 已载入: " + WebBridge.I.BridgeJs.Length + " 字节");
+        if (WebBridge.I.BridgeJs.Length < 200)
+            Log.Write("!!!!!! 严重: 桥接脚本 bridge.js 未载入，接口调用将全部失败（NO_BRIDGE）。请把 bridge.js 放到 exe 同目录的 Assets\\ 下后重启。");
 
         // 先起 HTTP 服务：即使窗口/WebView2 出问题，接口也能提供服务（日志可查）
         try { ChatEngine.I.StartAll(Prefs.Port); }
@@ -93,24 +105,59 @@ internal static class Program
         }
     }
 
-    public static string LoadEmbedded(string name)
+    /// <summary>
+    /// 读取内嵌资源。默认逻辑名 = RootNamespace + 目录 + 文件名（本项目为 DSWebApi.Desktop.Assets.bridge.js），
+    /// 因此绝不能用 AssemblyName 拼接；这里按「精确名 → 后缀匹配」查找，并带磁盘兜底。
+    /// </summary>
+    public static string LoadEmbedded(string simpleName)
     {
+        var asm = Assembly.GetExecutingAssembly();
         try
         {
-            var asm = Assembly.GetExecutingAssembly();
-            using var s = asm.GetManifestResourceStream(asm.GetName().Name + "." + name);
-            if (s == null)
+            var names = asm.GetManifestResourceNames();
+            string hit = names.FirstOrDefault(n => string.Equals(n, simpleName, StringComparison.OrdinalIgnoreCase))
+                      ?? names.FirstOrDefault(n => n.EndsWith("." + simpleName, StringComparison.OrdinalIgnoreCase))
+                      ?? names.FirstOrDefault(n => n.EndsWith("Assets." + simpleName, StringComparison.OrdinalIgnoreCase))
+                      ?? names.FirstOrDefault(n => n.EndsWith(simpleName, StringComparison.OrdinalIgnoreCase));
+            if (hit != null)
             {
-                Log.Write("!! 找不到内嵌资源: " + name);
-                return "";
+                using var s = asm.GetManifestResourceStream(hit);
+                if (s != null)
+                {
+                    using var r = new StreamReader(s, new UTF8Encoding(false), true);
+                    string text = r.ReadToEnd();
+                    if (text.Length > 0)
+                    {
+                        Log.Write("内嵌资源 " + simpleName + " ← " + hit + "（" + text.Length + " 字节）");
+                        return text;
+                    }
+                    Log.Write("!! 内嵌资源为空: " + hit);
+                }
             }
-            using var r = new StreamReader(s);
-            return r.ReadToEnd();
+            Log.Write("!! 未找到内嵌资源 " + simpleName + "；程序集内可用资源: " + string.Join(", ", names));
         }
         catch (Exception e)
         {
-            Log.Write("!! 读取内嵌资源失败 " + name + ": " + e.Message);
-            return "";
+            Log.Write("!! 读取内嵌资源失败 " + simpleName + ": " + e.Message);
         }
+
+        // 兜底：exe 同目录（用户可自行放一份 Assets\bridge.js 修复）
+        foreach (var path in new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "Assets", simpleName),
+            Path.Combine(AppContext.BaseDirectory, simpleName),
+        })
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    string t = File.ReadAllText(path, new UTF8Encoding(false));
+                    if (t.Length > 0) { Log.Write("从磁盘载入 " + simpleName + ": " + path + "（" + t.Length + " 字节）"); return t; }
+                }
+            }
+            catch { }
+        }
+        return "";
     }
 }

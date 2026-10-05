@@ -33,6 +33,10 @@ public sealed class WebBridge
     public void SetStatusListener(IStatusListener l) => _listener = l;
     public bool IsAttached => _wv != null;
     public bool IsReady => _wv != null && _pageLoaded;
+
+    /// <summary>bridge.js 是否真的载入（0 字节 = 所有调用必失败，需在健康检查里暴露出来）。</summary>
+    public int BridgeBytes => _bridgeJs == null ? 0 : _bridgeJs.Length;
+    public bool BridgeLoaded => BridgeBytes >= 200;
     private volatile bool _pageLoaded;
 
     public void MarkPageLoaded(bool v) => _pageLoaded = v;
