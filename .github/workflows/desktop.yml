@@ -1,0 +1,148 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop.yml'
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop/DSWebApi.Desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build -c Release --no-restore
+
+      # ---------- 1) 核心引擎自检（解析/转义/正文不吞内容）----------
+      - name: Self test (engine)
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "bin\Release\net8.0-windows\win-x64\DeepSeekWebAPI.exe").Path
+          if (-not (Test-Path $exe)) { throw "找不到 $exe" }
+          $slog = Join-Path $env:LOCALAPPDATA "DeepSeekWebAPI\selftest.log"
+          Remove-Item $slog -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest' -PassThru -Wait
+          Write-Host "selftest exit = $($p.ExitCode)"
+          if (Test-Path $slog) { Get-Content $slog } else { Write-Host "!! 未生成 selftest.log" }
+          if ($p.ExitCode -ne 0) { throw "引擎自检失败（exit=$($p.ExitCode)）" }
+
+      # ---------- 2) 单文件发布 ----------
+      - name: Publish single-file exe
+        run: dotnet publish -c Release -o publish
+
+      - name: Inspect publish output
+        shell: pwsh
+        run: |
+          Get-ChildItem publish | Select-Object Name,Length | Format-Table -AutoSize
+          $exe = "publish\DeepSeekWebAPI.exe"
+          if (-not (Test-Path $exe)) { throw "未生成单文件 exe" }
+          Write-Host ("exe size = {0:N1} MB" -f ((Get-Item $exe).Length / 1MB))
+
+      # ---------- 3) 真机冒烟测试：启动 / 托盘 / HTTP 探活 / 主窗口 ----------
+      - name: Smoke test (launch + HTTP probe)
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD "publish\DeepSeekWebAPI.exe"
+          $log = Join-Path $env:LOCALAPPDATA "DeepSeekWebAPI\app.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
+          Write-Host "启动: $exe"
+          $p = Start-Process -FilePath $exe -PassThru
+          Write-Host "pid = $($p.Id)"
+          Start-Sleep -Seconds 30
+          if ($p.HasExited) {
+            Write-Host "!! 进程提前退出，exit=$($p.ExitCode)"
+            if (Test-Path $log) { Get-Content $log }
+            throw "程序启动后立即退出"
+          }
+          $healthOk = $false
+          for ($i = 0; $i -lt 12; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri "http://127.0.0.1:8787/health" -TimeoutSec 5 -UseBasicParsing
+              Write-Host "GET /health -> $($r.StatusCode) $($r.Content)"
+              if ($r.Content -like '*"status":"ok"*') { $healthOk = $true; break }
+            } catch { Write-Host "等待服务就绪 ($i): $($_.Exception.Message)" }
+            Start-Sleep -Seconds 3
+          }
+          if (Test-Path $log) { Write-Host "----- app.log -----"; Get-Content $log; Write-Host "----- /app.log -----" }
+          $p.Refresh()
+          Write-Host "MainWindowHandle = $($p.MainWindowHandle)"
+          if (-not $healthOk) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw "HTTP /health 未就绪" }
+
+          # 鉴权 + 模型列表
+          try {
+            $m = Invoke-WebRequest -Uri "http://127.0.0.1:8787/v1/models" -Headers @{ Authorization = "Bearer sk-deepseek" } -TimeoutSec 5 -UseBasicParsing
+            Write-Host "GET /v1/models -> $($m.StatusCode) $($m.Content)"
+          } catch { Write-Host "!! /v1/models 失败: $($_.Exception.Message)" }
+
+          # 无 Key 应 401
+          try {
+            $bad = Invoke-WebRequest -Uri "http://127.0.0.1:8787/v1/models" -TimeoutSec 5 -UseBasicParsing
+            Write-Host "!! 未带 Key 竟然成功: $($bad.StatusCode)"
+          } catch {
+            Write-Host "未鉴权请求被拒（预期 401）: $($_.Exception.Response.StatusCode.value__)"
+          }
+
+          # chat/completions 在未登录时应返回 503（而非崩溃）
+          try {
+            $c = Invoke-WebRequest -Uri "http://127.0.0.1:8787/v1/chat/completions" -Method POST `
+                 -Headers @{ Authorization = "Bearer sk-deepseek" } -ContentType "application/json" `
+                 -Body '{"model":"deepseek","messages":[{"role":"user","content":"hi"}]}' -TimeoutSec 20 -UseBasicParsing
+            Write-Host "chat -> $($c.StatusCode) $($c.Content)"
+          } catch {
+            Write-Host "chat 返回: $($_.Exception.Response.StatusCode.value__)（未登录时预期 503/502）"
+          }
+
+          if (Test-Path $log) { Write-Host "----- 冒烟结束后的 app.log -----"; Get-Content $log }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Write-Host "SMOKE_OK"
+
+      # ---------- 4) 收集产物 ----------
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          $name = "DeepSeekWebAPI-Desktop-$tag-win-x64"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item "publish\DeepSeekWebAPI.exe" "out\$name.exe"
+          Compress-Archive -Path "out\$name.exe" -DestinationPath "out\$name.zip" -Force
+          Get-ChildItem out | Select-Object Name,Length | Format-Table -AutoSize
+          echo "ART_NAME=$name" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeekWebAPI-desktop
+          path: desktop/DSWebApi.Desktop/out/*
+          if-no-files-found: error
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: DeepSeek Web API (Windows) ${{ github.ref_name }}
+          files: desktop/DSWebApi.Desktop/out/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
