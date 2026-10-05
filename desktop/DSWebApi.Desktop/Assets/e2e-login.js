@@ -2,12 +2,22 @@
  * E2E 登录自动化脚本（仅测试用，随 exe 内嵌，正常运行时不会执行）
  * 由 E2ETest.cs 在 UI 线程反复调用；每次调用重新探测页面并推进一步。
  * 凭据经 window.__E2E_CRED__ 注入，绝不出现在返回值/日志里。
+ *
+ * 注意：CI 上官网是英文界面（按钮是 "Log in" 而不是「登录」），
+ *       且首次访问会弹 Cookie 设置，必须先关掉否则会挡住点击。
  * ============================================================ */
 (function () {
   var C = window.__E2E_CRED__ || {};
   var phone = C.phone || '';
   var password = C.password || '';
 
+  var SUBMIT_WORDS = ['login', 'log in', 'signin', 'sign in', 'logon', 'continue',
+                      '登录', '登入', '登陆'];
+  var COOKIE_WORDS = ['accept all cookies', 'necessary cookies only', 'accept all',
+                      'accept cookies', 'accept', 'agree', 'got it', 'ok',
+                      '接受全部', '仅必要', '同意', '我知道了'];
+
+  function norm(s) { return (s || '').replace(/\s+/g, '').toLowerCase(); }
   function vis(el) {
     if (!el) return false;
     try {
@@ -24,18 +34,36 @@
     for (var i = 0; i < a.length; i++) if (vis(a[i])) out.push(a[i]);
     return out;
   }
-  function clickByText(kws) {
-    var cand = document.querySelectorAll('button,a,div[role=button],span,label');
+  function textOf(el) { return (el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim(); }
+
+  /* 找可点击元素：优先精确等于目标词，其次包含目标词 */
+  function findByWords(words, sel, maxLen) {
+    var cand = all(sel || 'button,a,div[role=button],input[type=submit],span');
+    var loose = null;
     for (var i = 0; i < cand.length; i++) {
       var el = cand[i];
-      if (!vis(el)) continue;
-      var t = (el.innerText || el.textContent || '').replace(/\s+/g, '');
-      if (!t || t.length > 12) continue;
-      for (var k = 0; k < kws.length; k++) {
-        if (t.indexOf(kws[k]) >= 0) { try { el.click(); } catch (e) {} return t; }
+      var raw = textOf(el);
+      if (!raw || raw.length > (maxLen || 24)) continue;
+      var n = norm(raw);
+      for (var k = 0; k < words.length; k++) {
+        var w = norm(words[k]);
+        if (n === w) return { el: el, text: raw, exact: true };
+        if (!loose && n.indexOf(w) >= 0 && n.length <= w.length + 6) loose = { el: el, text: raw, exact: false };
       }
     }
-    return '';
+    return loose;
+  }
+  function clickWords(words, sel, maxLen) {
+    var hit = findByWords(words, sel, maxLen);
+    if (!hit) return '';
+    try {
+      hit.el.click();
+      // 有些自定义按钮只认 pointer/mouse 事件
+      ['mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach(function (t) {
+        try { hit.el.dispatchEvent(new MouseEvent(t, { bubbles: true })); } catch (e) {}
+      });
+      return hit.text;
+    } catch (e) { return ''; }
   }
   function setVal(el, val) {
     try {
@@ -53,70 +81,61 @@
 
   var out = { url: location.href, title: document.title, actions: [], captcha: false, inputs: [], buttonTexts: [] };
 
-  /* --- 诊断信息（帮助远程定位页面结构变化） --- */
+  /* --- 诊断快照 --- */
   var ins = all('input');
   for (var i = 0; i < ins.length && i < 12; i++) {
     out.inputs.push({
       type: ins[i].type, name: ins[i].name, ph: ins[i].placeholder || '',
-      aria: ins[i].getAttribute('aria-label') || '', maxlength: ins[i].maxLength
+      aria: ins[i].getAttribute('aria-label') || ''
     });
   }
   var btns = all('button,a,div[role=button]');
   for (var j = 0; j < btns.length && out.buttonTexts.length < 24; j++) {
-    var bt = (btns[j].innerText || '').replace(/\s+/g, ' ').trim();
-    if (bt && bt.length <= 16 && out.buttonTexts.indexOf(bt) < 0) out.buttonTexts.push(bt);
+    var bt = textOf(btns[j]);
+    if (bt && bt.length <= 24 && out.buttonTexts.indexOf(bt) < 0) out.buttonTexts.push(bt);
   }
+  try { out.bodyText = (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').slice(0, 400); } catch (e) {}
 
-  /* --- 验证码/滑块检测：出现即停止自动操作，交回人工 --- */
+  /* --- 验证码/滑块：出现即停止自动操作 --- */
   var page = (document.body ? document.body.innerText : '') || '';
-  if (/拖动滑块|滑动验证|完成拼图|安全验证|请完成验证|图形验证/.test(page) ||
-      document.querySelector('.captcha, iframe[src*="captcha"], [class*="slider"]')) {
+  if (/拖动滑块|滑动验证|完成拼图|安全验证|请完成验证|图形验证|verify|verification code|captcha/i.test(page) ||
+      document.querySelector('iframe[src*="captcha"], [class*="slider"], [class*="captcha"]')) {
     out.captcha = true;
     out.stage = 'captcha';
     return JSON.stringify(out);
   }
 
-  /* --- 定位输入框 --- */
+  /* --- 0) 关掉 Cookie 弹窗（CI 上英文 "Accept all cookies"，会挡住按钮） --- */
+  if (/cookie/i.test(page)) {
+    var ck = clickWords(COOKIE_WORDS, 'button,div[role=button],a,span', 30);
+    if (ck) out.actions.push('cookie:' + ck);
+  }
+
   function findPhone() {
     var list = all('input');
     for (var i = 0; i < list.length; i++) {
       var el = list[i], ty = (el.type || 'text').toLowerCase();
-      var hint = ((el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.name || '')).toLowerCase();
+      var hint = norm((el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.name || ''));
       if ((ty === 'tel' || ty === 'text' || ty === 'email' || ty === 'number') &&
-          (hint.indexOf('手机') >= 0 || hint.indexOf('邮箱') >= 0 || hint.indexOf('账号') >= 0 ||
-           hint.indexOf('phone') >= 0 || hint.indexOf('email') >= 0 || list.length <= 2)) return el;
+          (hint.indexOf('phone') >= 0 || hint.indexOf('email') >= 0 || hint.indexOf('account') >= 0 ||
+           hint.indexOf('手机') >= 0 || hint.indexOf('邮箱') >= 0 || hint.indexOf('账号') >= 0 || list.length <= 2)) return el;
     }
     return null;
   }
   function findPwd() {
     var list = all('input');
-    for (var i = 0; i < list.length; i++) if ((list[i].type || '').toLowerCase() === 'password') return list[i];
-    return null;
-  }
-  function findSubmit() {
-    var cand = all('button,div[role=button],input[type=submit]');
-    for (var i = 0; i < cand.length; i++) {
-      var t = (cand[i].innerText || cand[i].value || '').replace(/\s+/g, '');
-      if (t === '登录' || t === '登入' || t === 'Sign in' || t === 'SignIn') return cand[i];
-    }
-    return null;
-  }
-  function agreeCheckbox() {
-    var list = all('input[type=checkbox]');
-    for (var i = 0; i < list.length; i++) if (!list[i].checked) return list[i];
+    for (var i = 0; i < list.length; i++) if (norm(list[i].type) === 'password') return list[i];
     return null;
   }
 
-  var pwd = findPwd();
-  var phoneEl = findPhone();
-
-  /* --- 1) 尚未展开登录表单：先点开入口 / 切到密码登录 --- */
+  /* --- 1) 展开登录表单 / 切到密码登录 --- */
+  var pwd = findPwd(), phoneEl = findPhone();
   if (!pwd) {
-    var a1 = clickByText(['密码登录', '使用密码', '账号密码登录', '账号密码']);
+    var a1 = clickWords(['密码登录', '账号密码', 'password'], 'button,div[role=button],a,span', 20);
     if (a1) out.actions.push('switch:' + a1);
   }
   if (!pwd && !phoneEl) {
-    var a2 = clickByText(['登录', '登入', 'Signin', 'SignIn']);
+    var a2 = clickWords(['登录', 'login', 'sign in'], 'button,div[role=button],a', 20);
     if (a2) out.actions.push('open:' + a2);
   }
 
@@ -130,19 +149,23 @@
     if (setVal(pwd, password)) out.actions.push('fill:pwd');
   }
 
-  var chk = agreeCheckbox();
-  if (chk) { try { chk.click(); out.actions.push('agree'); } catch (e) {} }
-
-  /* --- 3) 提交 --- */
-  if (pwd && (pwd.value || '').length > 0) {
-    var sb = findSubmit();
-    if (sb) { try { sb.click(); out.actions.push('submit'); } catch (e) {} }
-    else {
-      var a3 = clickByText(['登录', '登入', 'Signin', 'SignIn']);
-      if (a3) out.actions.push('submit-text:' + a3);
+  /* --- 3) 提交（最多 4 次，避免疯狂重复提交） --- */
+  var tries = window.__E2E_SUBMITS__ || 0;
+  if (pwd && (pwd.value || '').length > 0 && tries < 4) {
+    var sb = clickWords(SUBMIT_WORDS, 'button,input[type=submit],div[role=button]', 22);
+    if (!sb) {
+      // 兜底：表单里最后一个可点按钮
+      var forms = all('form');
+      if (forms.length) {
+        var bs = forms[0].querySelectorAll('button,input[type=submit]');
+        for (var m = bs.length - 1; m >= 0; m--) { if (vis(bs[m])) { try { bs[m].click(); sb = textOf(bs[m]) + '(form)'; break; } catch (e) {} } }
+      }
     }
+    if (sb) { window.__E2E_SUBMITS__ = tries + 1; out.actions.push('submit:' + sb); }
+    else out.actions.push('submit-not-found');
   }
 
+  out.submits = window.__E2E_SUBMITS__ || 0;
   out.stage = (!pwd && !phoneEl) ? 'no-form' : (out.actions.length ? 'acting' : 'idle');
   return JSON.stringify(out);
 })();

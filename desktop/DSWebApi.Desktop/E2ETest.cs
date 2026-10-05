@@ -151,7 +151,7 @@ internal static class E2ETest
 
             if (!ChatEngine.I.LoggedIn)
             {
-                for (int i = 0; i < 12 && !ChatEngine.I.LoggedIn; i++)
+                for (int i = 0; i < 18 && !ChatEngine.I.LoggedIn; i++)
                 {
                     string r = await Eval(loginJs);
                     P("登录 #" + i + ": " + Trunc(r, 1200));
