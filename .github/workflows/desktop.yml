@@ -119,22 +119,36 @@ jobs:
             Write-Host "未鉴权请求被拒（预期 401）: $($_.Exception.Response.StatusCode.value__)"
           }
 
-          # 截一张界面图（远程确认 UI 观感 / 是否真的画出来了）
+          # 截一张界面图：用 PrintWindow 按窗口真实尺寸渲染（CI 虚拟屏只有 1024x768，
+          # 直接截屏会把 1440x900 的窗口裁掉一半），便于远程确认 UI 观感与自适应。
           try {
-            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-            Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);'
-            $p.Refresh()
-            $h = (Get-Process -Id $p.Id).MainWindowHandle
-            if ($h -ne 0) { [W.U]::ShowWindow($h, 3) | Out-Null; [W.U]::SetForegroundWindow($h) | Out-Null }
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -Namespace W -Name U -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
+[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+'@
             New-Item -ItemType Directory -Force ui-shot | Out-Null
             Start-Sleep -Seconds 4
-            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-            $g = [System.Drawing.Graphics]::FromImage($bmp)
-            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-            $bmp.Save((Join-Path $PWD "ui-shot\ui.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-            $g.Dispose(); $bmp.Dispose()
-            Write-Host "UI 截图已保存: ui-shot\ui.png"
+            $p.Refresh()
+            $h = (Get-Process -Id $p.Id).MainWindowHandle
+            Write-Host "窗口句柄 = $h"
+            if ($h -ne 0) {
+              $r = New-Object W.U+RECT
+              [W.U]::GetWindowRect($h, [ref]$r) | Out-Null
+              $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top
+              Write-Host "窗口尺寸 = ${w}x${ht}"
+              if ($w -gt 100 -and $ht -gt 100) {
+                $bmp = New-Object System.Drawing.Bitmap $w, $ht
+                $g = [System.Drawing.Graphics]::FromImage($bmp)
+                $hdc = $g.GetHdc()
+                [W.U]::PrintWindow($h, $hdc, 2) | Out-Null
+                $g.ReleaseHdc($hdc); $g.Dispose()
+                $bmp.Save((Join-Path $PWD "ui-shot\ui.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+                $bmp.Dispose()
+                Write-Host "UI 截图已保存: ui-shot\ui.png"
+              }
+            }
           } catch { Write-Host "UI 截图失败: $($_.Exception.Message)" }
 
           if (Test-Path $log) { Write-Host "----- 冒烟结束后的 app.log -----"; Get-Content $log }

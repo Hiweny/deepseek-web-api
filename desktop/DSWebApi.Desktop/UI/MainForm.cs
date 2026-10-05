@@ -328,7 +328,9 @@ public sealed class MainForm : Form
         // 这里用 MaximumSize.Width 强制列宽随窗口变化，高度仍由内容决定。
         var inner = new TableLayoutPanel
         {
-            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Location = new Point(0, 0),
+            // AutoSize 必须为 false：TableLayoutPanel 一旦 AutoSize，就会用「自身首选宽度」覆盖外部设定的宽度，
+            // 表现就是窗口放大后内容不铺满（右侧留一大片空白）。这里宽度由窗口决定，高度按内容算。
+            AutoSize = false, Location = new Point(0, 0),
             ColumnCount = 1, BackColor = CBg, Margin = Padding.Empty,
         };
         inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -339,8 +341,8 @@ public sealed class MainForm : Form
             try
             {
                 int w = Math.Max((int)(640 * _s), host.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
-                inner.MaximumSize = new Size(w, 0);
                 inner.Width = w;
+                inner.Height = inner.GetPreferredSize(new Size(w, 0)).Height;
             }
             catch { }
         }
@@ -788,6 +790,7 @@ public sealed class MainForm : Form
             if (_vState != null)
             {
                 _vState.Text = eng.State;
+                _vState.Font = F(eng.State.Length > 9 ? 13f : 18f, FontStyle.Bold);
                 _vState.ForeColor = eng.State.StartsWith("运行中（已就绪") ? COk
                     : eng.State.StartsWith("运行中") ? CWarn
                     : eng.State == "已停止" ? CBad : CText;
@@ -798,6 +801,7 @@ public sealed class MainForm : Form
                     : !bridgeOk ? "桥接脚本缺失"
                     : (WebBridge.I.IsReady ? "已加载" : "加载中…");
                 _vWeb.ForeColor = WebBridge.I.IsReady && bridgeOk ? COk : CWarn;
+                _vWeb.Font = F(_vWeb.Text.Length > 6 ? 13f : 18f, FontStyle.Bold);
             }
             if (_vLogin != null)
             {
