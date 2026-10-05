@@ -114,13 +114,13 @@ public sealed class MainForm : Form
             Text = text,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            MinimumSize = new Size((int)(92 * _s), (int)(38 * _s)),
+            MinimumSize = new Size((int)(104 * _s), (int)(42 * _s)),
             FlatStyle = FlatStyle.Flat,
             BackColor = primary ? CAccentDim : CCard,
             ForeColor = primary ? CAccent : CText,
-            Font = F(10.5f),
+            Font = F(11.5f),
             Cursor = Cursors.Hand,
-            Margin = new Padding(0, 0, (int)(10 * _s), 0),
+            Margin = new Padding(0, 0, (int)(12 * _s), 0),
             Padding = new Padding((int)(10 * _s), 0, (int)(10 * _s), 0),
             UseVisualStyleBackColor = false,
         };
@@ -153,8 +153,8 @@ public sealed class MainForm : Form
         {
             card.Controls.Add(new Label
             {
-                Text = title, Left = (int)(20 * _s), Top = (int)(16 * _s), AutoSize = true,
-                ForeColor = CAccent, Font = F(12f, FontStyle.Bold), BackColor = Color.Transparent,
+                Text = title, Left = (int)(22 * _s), Top = (int)(18 * _s), AutoSize = true,
+                ForeColor = CAccent, Font = F(13f, FontStyle.Bold), BackColor = Color.Transparent,
             });
         }
         return card;
@@ -175,7 +175,7 @@ public sealed class MainForm : Form
 
     private Label SmallLabel(string text, Color c) => new Label
     {
-        Text = text, AutoSize = true, ForeColor = c, Font = F(10.5f), BackColor = Color.Transparent,
+        Text = text, AutoSize = true, ForeColor = c, Font = F(11.5f), BackColor = Color.Transparent,
     };
 
     /* ================= 布局 ================= */
@@ -191,7 +191,7 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = CBg,
             Margin = Padding.Empty, Padding = Padding.Empty,
         };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 252 * _s));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 282 * _s));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
@@ -200,9 +200,9 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CSide, Margin = Padding.Empty,
         };
-        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 104 * _s));
+        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 122 * _s));
         side.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 128 * _s));
+        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 152 * _s));
         root.Controls.Add(side, 0, 0);
 
         var head = new Panel { Dock = DockStyle.Fill, BackColor = CSide };
@@ -212,20 +212,20 @@ public sealed class MainForm : Form
             if (ico != null)
                 head.Controls.Add(new PictureBox
                 {
-                    Left = (int)(22 * _s), Top = (int)(28 * _s), Width = (int)(38 * _s), Height = (int)(38 * _s),
+                    Left = (int)(24 * _s), Top = (int)(32 * _s), Width = (int)(44 * _s), Height = (int)(44 * _s),
                     SizeMode = PictureBoxSizeMode.Zoom, Image = ico.ToBitmap(), BackColor = Color.Transparent,
                 });
         }
         catch { }
         head.Controls.Add(new Label
         {
-            Text = "DeepSeek Web API", Left = (int)(70 * _s), Top = (int)(26 * _s), AutoSize = true,
-            ForeColor = CText, Font = F(13.5f, FontStyle.Bold), BackColor = Color.Transparent,
+            Text = "DeepSeek Web API", Left = (int)(80 * _s), Top = (int)(30 * _s), AutoSize = true,
+            ForeColor = CText, Font = F(15f, FontStyle.Bold), BackColor = Color.Transparent,
         });
         head.Controls.Add(new Label
         {
-            Text = "Windows 桌面版 v" + Program.Version, Left = (int)(70 * _s), Top = (int)(56 * _s), AutoSize = true,
-            ForeColor = CSub, Font = F(9.5f), BackColor = Color.Transparent,
+            Text = "Windows 桌面版 v" + Program.Version, Left = (int)(80 * _s), Top = (int)(64 * _s), AutoSize = true,
+            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
         });
         side.Controls.Add(head, 0, 0);
 
@@ -244,11 +244,11 @@ public sealed class MainForm : Form
             Padding = new Padding((int)(18 * _s), 0, (int)(18 * _s), (int)(14 * _s)),
         };
         foot.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 40 * _s));
-        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 40 * _s));
+        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 46 * _s));
+        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 46 * _s));
         _sideState = new Label
         {
-            Dock = DockStyle.Fill, ForeColor = CSub, Font = F(9.5f), BackColor = Color.Transparent,
+            Dock = DockStyle.Fill, ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
             Text = "服务：—",
         };
         foot.Controls.Add(_sideState, 0, 0);
@@ -285,16 +285,16 @@ public sealed class MainForm : Form
         var b = new Button
         {
             Text = text,
-            Width = (int)(224 * _s),
-            Height = (int)(54 * _s),
+            Width = (int)(254 * _s),
+            Height = (int)(60 * _s),
             FlatStyle = FlatStyle.Flat,
             TextAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding((int)(18 * _s), 0, 0, 0),
             BackColor = CSide,
             ForeColor = CText,
-            Font = F(12f),
+            Font = F(13.5f),
             Cursor = Cursors.Hand,
-            Margin = new Padding(0, (int)(4 * _s), 0, (int)(4 * _s)),
+            Margin = new Padding(0, (int)(5 * _s), 0, (int)(5 * _s)),
             UseVisualStyleBackColor = false,
         };
         b.FlatAppearance.BorderSize = 0;
@@ -313,7 +313,7 @@ public sealed class MainForm : Form
         {
             _navBtns[i].BackColor = i == index ? CAccentDim : CSide;
             _navBtns[i].ForeColor = i == index ? CAccent : CText;
-            _navBtns[i].Font = F(12f, i == index ? FontStyle.Bold : FontStyle.Regular);
+            _navBtns[i].Font = F(13.5f, i == index ? FontStyle.Bold : FontStyle.Regular);
         }
         if (index == 1 && !_webTried) _ = InitWebAsync();
         RefreshStats();
@@ -324,37 +324,46 @@ public sealed class MainForm : Form
     private Control BuildConsolePage()
     {
         var host = new Panel { Dock = DockStyle.Fill, BackColor = CBg, AutoScroll = true };
+        // 注意：TableLayoutPanel 一旦 AutoSize，Dock/Width 会被它自己重算，导致「内容不铺满窗口」。
+        // 这里用 MaximumSize.Width 强制列宽随窗口变化，高度仍由内容决定。
         var inner = new TableLayoutPanel
         {
-            Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Location = new Point(0, 0),
             ColumnCount = 1, BackColor = CBg, Margin = Padding.Empty,
         };
         inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         host.Controls.Add(inner);
-        host.HandleCreated += (s, e) => { try { inner.Width = Math.Max((int)(560 * _s), host.ClientSize.Width - 2); } catch { } };
-        host.ClientSizeChanged += (s, e) =>
-        {
-            try { inner.Width = Math.Max((int)(560 * _s), host.ClientSize.Width - 2); } catch { }
-        };
 
-        var title = new Label
+        void Sync()
         {
-            Text = "控制台", AutoSize = true, ForeColor = CText, Font = F(21f, FontStyle.Bold),
-            Margin = new Padding(0, 0, 0, (int)(4 * _s)), BackColor = Color.Transparent,
-        };
-        inner.Controls.Add(title);
+            try
+            {
+                int w = Math.Max((int)(640 * _s), host.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
+                inner.MaximumSize = new Size(w, 0);
+                inner.Width = w;
+            }
+            catch { }
+        }
+        host.HandleCreated += (s, e) => Sync();
+        host.ClientSizeChanged += (s, e) => Sync();
+
+        inner.Controls.Add(new Label
+        {
+            Text = "控制台", AutoSize = true, ForeColor = CText, Font = F(24f, FontStyle.Bold),
+            Margin = new Padding(0, 0, 0, (int)(6 * _s)), BackColor = Color.Transparent,
+        });
         inner.Controls.Add(new Label
         {
             Text = "把 chat.deepseek.com 官网封装成本机 / 局域网的 OpenAI 兼容接口",
-            AutoSize = true, ForeColor = CSub, Font = F(10.5f),
-            Margin = new Padding(0, 0, 0, (int)(18 * _s)), BackColor = Color.Transparent,
+            AutoSize = true, ForeColor = CSub, Font = F(11.5f),
+            Margin = new Padding(0, 0, 0, (int)(20 * _s)), BackColor = Color.Transparent,
         });
 
         /* 三块状态磁贴 */
         var tiles = new TableLayoutPanel
         {
-            ColumnCount = 3, RowCount = 1, Dock = DockStyle.Top, AutoSize = false,
-            Height = (int)(104 * _s), BackColor = CBg, Margin = new Padding(0, 0, 0, (int)(14 * _s)),
+            ColumnCount = 3, RowCount = 1, Dock = DockStyle.Top,
+            Height = (int)(118 * _s), BackColor = CBg, Margin = new Padding(0, 0, 0, (int)(16 * _s)),
         };
         for (int i = 0; i < 3; i++) tiles.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
         tiles.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -363,78 +372,74 @@ public sealed class MainForm : Form
         _vLogin = StatTile(tiles, 2, "登录状态", CWarn);
         inner.Controls.Add(tiles);
 
-        /* 接口信息 */
-        var c1 = Card("接口信息", 150);
-        int y = (int)(50 * _s);
+        /* 接口信息：3 行键值 + 一行按钮（按钮放在最后一行下方，避免与 API Key 重叠） */
+        var c1 = Card("接口信息", 224);
+        int y = (int)(58 * _s);
         _vBase = KV(c1, "Base URL（本机）", ref y);
         _vLan = KV(c1, "Base URL（局域网）", ref y);
         _vKey = KV(c1, "API Key", ref y);
         var b1 = new FlowLayoutPanel
         {
-            Left = (int)(20 * _s), Top = (int)(150 * _s - 52 * _s), Height = (int)(40 * _s),
-            Width = (int)(900 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Left = (int)(22 * _s), Top = y + (int)(10 * _s), Height = (int)(44 * _s),
+            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
         };
-        b1.Controls.Add(FlatBtn("复制 Base URL", (s, e) => Copy(BaseUrl(true)), true));
-        b1.Controls.Add(FlatBtn("复制 API Key", (s, e) => Copy(Prefs.ApiKey)));
-        b1.Controls.Add(FlatBtn("复制局域网地址", (s, e) => Copy(BaseUrl(false))));
+        b1.Controls.Add(FlatBtn("复制 Base URL", (s2, e2) => Copy(BaseUrl(true)), true));
+        b1.Controls.Add(FlatBtn("复制 API Key", (s2, e2) => Copy(Prefs.ApiKey)));
+        b1.Controls.Add(FlatBtn("复制局域网地址", (s2, e2) => Copy(BaseUrl(false))));
         c1.Controls.Add(b1);
-        c1.Height = (int)(206 * _s);
         inner.Controls.Add(Wrap(c1));
 
         /* 运行数据 */
-        var c2 = Card("运行数据", 150);
-        y = (int)(50 * _s);
+        var c2 = Card("运行数据", 172);
+        y = (int)(58 * _s);
         _vCalls = KV(c2, "调用统计", ref y);
         _vCtx = KV(c2, "会话上下文", ref y);
         _vLast = KV(c2, "最近一次", ref y);
-        c2.Height = (int)(148 * _s);
         inner.Controls.Add(Wrap(c2));
 
-        /* 操作 */
-        var c3 = Card("常用操作", 128);
+        /* 常用操作（两行按钮，行距固定，互不重叠） */
+        var c3 = Card("常用操作", 178);
         var b3 = new FlowLayoutPanel
         {
-            Left = (int)(20 * _s), Top = (int)(52 * _s), Height = (int)(40 * _s),
-            Width = (int)(1000 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Left = (int)(22 * _s), Top = (int)(58 * _s), Height = (int)(46 * _s),
+            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
         };
-        b3.Controls.Add(FlatBtn("新建对话", (s, e) => NewChat()));
-        b3.Controls.Add(FlatBtn("重载网页", (s, e) => ReloadWeb()));
-        b3.Controls.Add(FlatBtn("放行防火墙（需管理员）", (s, e) => AddFirewallRule()));
-        b3.Controls.Add(FlatBtn("复制 netsh 命令", (s, e) => { Copy(FirewallCmd()); Toast("netsh 命令已复制"); }));
+        b3.Controls.Add(FlatBtn("新建对话", (s2, e2) => NewChat()));
+        b3.Controls.Add(FlatBtn("重载网页", (s2, e2) => ReloadWeb()));
+        b3.Controls.Add(FlatBtn("放行防火墙（需管理员）", (s2, e2) => AddFirewallRule()));
+        b3.Controls.Add(FlatBtn("复制 netsh 命令", (s2, e2) => { Copy(FirewallCmd()); Toast("netsh 命令已复制"); }));
         var b3b = new FlowLayoutPanel
         {
-            Left = (int)(20 * _s), Top = (int)(52 * _s + 48 * _s), Height = (int)(40 * _s),
-            Width = (int)(1000 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Left = (int)(22 * _s), Top = (int)(112 * _s), Height = (int)(46 * _s),
+            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
         };
-        b3b.Controls.Add(FlatBtn("打开设置", (s, e) => ShowSettings()));
-        b3b.Controls.Add(FlatBtn("打开日志", (s, e) => OpenFile(Log.FilePath)));
-        b3b.Controls.Add(FlatBtn("打开数据目录", (s, e) => OpenFolder(Log.Dir)));
+        b3b.Controls.Add(FlatBtn("打开设置", (s2, e2) => ShowSettings()));
+        b3b.Controls.Add(FlatBtn("打开日志", (s2, e2) => OpenFile(Log.FilePath)));
+        b3b.Controls.Add(FlatBtn("打开数据目录", (s2, e2) => OpenFolder(Log.Dir)));
         c3.Controls.Add(b3);
         c3.Controls.Add(b3b);
-        c3.Height = (int)(152 * _s);
         inner.Controls.Add(Wrap(c3));
 
-        /* 使用说明 */
-        var c4 = Card("客户端填写（OpenAI 兼容）", 210);
-        var code = new Label
+        /* 客户端填写说明 */
+        var c4 = Card("客户端填写（OpenAI 兼容）", 248);
+        c4.Controls.Add(new Label
         {
-            Left = (int)(20 * _s), Top = (int)(52 * _s), Width = (int)(900 * _s), Height = (int)(92 * _s),
-            ForeColor = CText, Font = F(10.5f), BackColor = Color.Transparent,
+            Left = (int)(22 * _s), Top = (int)(58 * _s), Width = (int)(960 * _s), Height = (int)(108 * _s),
+            ForeColor = CText, Font = F(12f), BackColor = Color.Transparent,
             Text = "Base URL : http://127.0.0.1:8787/v1      # 局域网设备换成上面的局域网地址\r\n" +
                    "API Key  : " + Prefs.ApiKey + "\r\n" +
                    "Model    : deepseek                     # 任意名称均可",
-        };
-        c4.Controls.Add(code);
+        });
         c4.Controls.Add(new Label
         {
-            Left = (int)(20 * _s), Top = (int)(148 * _s), Width = (int)(1000 * _s), Height = (int)(48 * _s),
-            ForeColor = CSub, Font = F(9.5f), BackColor = Color.Transparent,
+            Left = (int)(22 * _s), Top = (int)(172 * _s), Width = (int)(960 * _s), Height = (int)(56 * _s),
+            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
             Text = "局域网访问需放行防火墙（点上面的按钮或手动执行 netsh）；\r\n" +
                    "调用前请在「对话页」登录官网，未登录时接口返回 503。",
         });
         inner.Controls.Add(Wrap(c4));
 
-        inner.Controls.Add(new Panel { Height = (int)(12 * _s), BackColor = CBg });
+        inner.Controls.Add(new Panel { Height = (int)(16 * _s), BackColor = CBg });
         return host;
     }
 
@@ -464,13 +469,13 @@ public sealed class MainForm : Form
         };
         tile.Controls.Add(new Label
         {
-            Text = title, Left = (int)(20 * _s), Top = (int)(18 * _s), AutoSize = true,
-            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
+            Text = title, Left = (int)(24 * _s), Top = (int)(20 * _s), AutoSize = true,
+            ForeColor = CSub, Font = F(11.5f), BackColor = Color.Transparent,
         });
         var v = new Label
         {
-            Text = "—", Left = (int)(20 * _s), Top = (int)(48 * _s), AutoSize = true,
-            ForeColor = accent, Font = F(16.5f, FontStyle.Bold), BackColor = Color.Transparent,
+            Text = "—", Left = (int)(24 * _s), Top = (int)(54 * _s), AutoSize = true,
+            ForeColor = accent, Font = F(18f, FontStyle.Bold), BackColor = Color.Transparent,
         };
         tile.Controls.Add(v);
         parent.Controls.Add(tile, col, 0);
@@ -481,16 +486,16 @@ public sealed class MainForm : Form
     {
         card.Controls.Add(new Label
         {
-            Text = name, Left = (int)(20 * _s), Top = y + (int)(3 * _s), AutoSize = true,
-            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
+            Text = name, Left = (int)(22 * _s), Top = y + (int)(4 * _s), AutoSize = true,
+            ForeColor = CSub, Font = F(11.5f), BackColor = Color.Transparent,
         });
         var v = new Label
         {
-            Text = "—", Left = (int)(250 * _s), Top = y, AutoSize = true,
-            ForeColor = CText, Font = F(11.5f), BackColor = Color.Transparent,
+            Text = "—", Left = (int)(290 * _s), Top = y, AutoSize = true,
+            ForeColor = CText, Font = F(12.5f), BackColor = Color.Transparent,
         };
         card.Controls.Add(v);
-        y += (int)(30 * _s);
+        y += (int)(32 * _s);
         return v;
     }
 

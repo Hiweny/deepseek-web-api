@@ -122,8 +122,12 @@ jobs:
           # 截一张界面图（远程确认 UI 观感 / 是否真的画出来了）
           try {
             Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);'
+            $p.Refresh()
+            $h = (Get-Process -Id $p.Id).MainWindowHandle
+            if ($h -ne 0) { [W.U]::ShowWindow($h, 3) | Out-Null; [W.U]::SetForegroundWindow($h) | Out-Null }
             New-Item -ItemType Directory -Force ui-shot | Out-Null
-            Start-Sleep -Seconds 3
+            Start-Sleep -Seconds 4
             $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
             $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
             $g = [System.Drawing.Graphics]::FromImage($bmp)
