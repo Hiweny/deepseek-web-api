@@ -123,11 +123,7 @@ jobs:
           # 直接截屏会把 1440x900 的窗口裁掉一半），便于远程确认 UI 观感与自适应。
           try {
             Add-Type -AssemblyName System.Drawing
-            Add-Type -Namespace W -Name U -MemberDefinition @'
-[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
-[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-'@
+            Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect); public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }'
             New-Item -ItemType Directory -Force ui-shot | Out-Null
             Start-Sleep -Seconds 4
             $p.Refresh()
