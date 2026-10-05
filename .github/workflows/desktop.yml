@@ -16,6 +16,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    # secrets 不能直接出现在 step 的 if 里（会报 Unrecognized named-value），先落到 job 级 env
+    env:
+      E2E_ENABLED: ${{ secrets.DS_TEST_PHONE != '' }}
     defaults:
       run:
         working-directory: desktop/DSWebApi.Desktop
@@ -123,7 +126,7 @@ jobs:
 
       # ---------- 4) 端到端真机测试：自动登录 + 通过本地接口真实对话 ----------
       - name: E2E (login + real chat completion)
-        if: ${{ secrets.DS_TEST_PHONE != '' }}
+        if: env.E2E_ENABLED == 'true' 
         continue-on-error: true
         shell: pwsh
         env:
