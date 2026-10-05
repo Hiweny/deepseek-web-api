@@ -119,6 +119,20 @@ jobs:
             Write-Host "未鉴权请求被拒（预期 401）: $($_.Exception.Response.StatusCode.value__)"
           }
 
+          # 截一张界面图（远程确认 UI 观感 / 是否真的画出来了）
+          try {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            New-Item -ItemType Directory -Force ui-shot | Out-Null
+            Start-Sleep -Seconds 3
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save((Join-Path $PWD "ui-shot\ui.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+            Write-Host "UI 截图已保存: ui-shot\ui.png"
+          } catch { Write-Host "UI 截图失败: $($_.Exception.Message)" }
+
           if (Test-Path $log) { Write-Host "----- 冒烟结束后的 app.log -----"; Get-Content $log }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
@@ -152,7 +166,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-diagnostics
-          path: desktop/DSWebApi.Desktop/e2e-out/*
+          path: |
+            desktop/DSWebApi.Desktop/e2e-out/*
+            desktop/DSWebApi.Desktop/ui-shot/*
           if-no-files-found: ignore
 
       # ---------- 5) 收集产物 ----------

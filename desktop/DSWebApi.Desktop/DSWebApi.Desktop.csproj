@@ -11,9 +11,9 @@
     <RootNamespace>DSWebApi.Desktop</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.0.5</Version>
-    <FileVersion>1.0.5.0</FileVersion>
-    <AssemblyVersion>1.0.5.0</AssemblyVersion>
+    <Version>1.0.6</Version>
+    <FileVersion>1.0.6.0</FileVersion>
+    <AssemblyVersion>1.0.6.0</AssemblyVersion>
     <Product>DeepSeek Web API</Product>
     <AssemblyTitle>DeepSeek Web API (Windows)</AssemblyTitle>
     <Company>Hiweny</Company>
