@@ -466,7 +466,7 @@ public sealed class MainForm : Form
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        int[] rows = { 46, 30, 122, 310, 266, 280, 244, 12 };
+        int[] rows = { 46, 30, 122, 310, 212, 280, 244, 12 };
         foreach (var r in rows) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, (int)(r * _s)));
         host.Controls.Add(grid);
 
@@ -553,10 +553,10 @@ public sealed class MainForm : Form
         grid.Controls.Add(c5, 1, 3);
 
         /* 账号调用情况 */
-        var c6 = Card("账号调用情况（轮换顺序）", 254);
+        var c6 = Card("账号调用情况（轮换顺序）", 200);
         _acctTable = new TableLayoutPanel
         {
-            Left = Pad, Top = (int)(56 * _s), Width = (int)(520 * _s), Height = (int)(182 * _s),
+            Left = Pad, Top = (int)(54 * _s), Width = (int)(520 * _s), Height = (int)(128 * _s),
             ColumnCount = 6, BackColor = Color.Transparent, AutoScroll = true, Margin = Padding.Empty,
         };
         _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38 * _s));
@@ -1017,7 +1017,7 @@ public sealed class MainForm : Form
             if (_vLan != null) _vLan.Text = string.IsNullOrEmpty(eng.LanUrl) ? "—" : eng.LanUrl;
             if (_vKey != null) _vKey.Text = Prefs.ApiKey;
             if (_sideState != null)
-                _sideState.Text = "服务 " + (eng.ServiceRunning ? "运行中" : "已停止")
+                _sideState.Text = (eng.ServiceRunning ? "运行中" : "已停止")
                     + " · 端口 " + (eng.Port > 0 ? eng.Port : Prefs.Port) + "\r\n"
                     + "局域网 " + (Prefs.LanEnabled ? "开" : "关")
                     + " · 轮换 " + (Prefs.RotateEnabled ? "第 " + AccountPool.I.CycleNo + " 轮" : "关");
