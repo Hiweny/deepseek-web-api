@@ -142,7 +142,7 @@ public sealed class MainForm : Form
             Text = text,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            MinimumSize = new Size((int)(104 * _s), (int)(42 * _s)),
+            MinimumSize = new Size((int)(74 * _s), (int)(40 * _s)),
             FlatStyle = FlatStyle.Flat,
             BackColor = primary ? CAccentDim : CCard,
             ForeColor = primary ? CAccent : CText,
@@ -505,7 +505,7 @@ public sealed class MainForm : Form
         };
         b1.Controls.Add(FlatBtn("复制地址", (s2, e2) => Copy(BaseUrl(true)), true));
         b1.Controls.Add(FlatBtn("复制 Key", (s2, e2) => Copy(Prefs.ApiKey)));
-        b1.Controls.Add(FlatBtn("局域网地址", (s2, e2) => Copy(BaseUrl(false))));
+        b1.Controls.Add(FlatBtn("局域网", (s2, e2) => Copy(BaseUrl(false))));
         c1.Controls.Add(b1);
         c1.Resize += (s2, e2) => FitTracked(c1);
         grid.Controls.Add(c1, 0, 3);
