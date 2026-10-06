@@ -189,6 +189,9 @@ internal static class RotateTest
                 }
                 catch (Exception ex) { P("第 " + r + " 次请求异常: " + ex.Message); otherFail++; }
 
+                // HTTP 响应在 SendJson 之后、OnSent 记账之前就回到客户端了，
+                // 必须稍等再读快照，否则会误判成"没人承接"（曾导致顺序判定误报）。
+                await Task.Delay(1000);
                 string who = "?";
                 foreach (var x in AccountPool.I.Snapshot())
                 {
@@ -211,7 +214,7 @@ internal static class RotateTest
                   + " · " + Trunc(resp.Replace("\n", " "), 120));
                 P("    池状态: " + string.Join(" | ", AccountPool.I.Snapshot().Select(x =>
                       x.Name + "=" + x.StateText + "(总" + x.TotalCalls + ")")));
-                await Task.Delay(700);
+                await Task.Delay(150);
             }
 
             /* 5) 并发测试：同时发 nAcc 个请求，应分散到 nAcc 个不同账号 */

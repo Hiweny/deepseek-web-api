@@ -451,7 +451,7 @@ public sealed class MainForm : Form
         {
             try
             {
-                int w = Math.Max((int)(880 * _s), host.ClientSize.Width - 8);
+                int w = Math.Max((int)(520 * _s), host.ClientSize.Width - 8);
                 grid.Width = w;
                 int h = 0;
                 for (int i = 0; i < grid.RowStyles.Count; i++) h += (int)grid.RowStyles[i].Height;
@@ -503,9 +503,9 @@ public sealed class MainForm : Form
             Left = Pad, Top = y + (int)(12 * _s), Height = (int)(44 * _s),
             Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
         };
-        b1.Controls.Add(FlatBtn("复制本机地址", (s2, e2) => Copy(BaseUrl(true)), true));
-        b1.Controls.Add(FlatBtn("复制 API Key", (s2, e2) => Copy(Prefs.ApiKey)));
-        b1.Controls.Add(FlatBtn("复制局域网", (s2, e2) => Copy(BaseUrl(false))));
+        b1.Controls.Add(FlatBtn("复制地址", (s2, e2) => Copy(BaseUrl(true)), true));
+        b1.Controls.Add(FlatBtn("复制 Key", (s2, e2) => Copy(Prefs.ApiKey)));
+        b1.Controls.Add(FlatBtn("局域网地址", (s2, e2) => Copy(BaseUrl(false))));
         c1.Controls.Add(b1);
         c1.Resize += (s2, e2) => FitTracked(c1);
         grid.Controls.Add(c1, 0, 3);
@@ -541,11 +541,11 @@ public sealed class MainForm : Form
             Left = Pad, Top = (int)(56 * _s), Width = (int)(520 * _s), Height = (int)(182 * _s),
             ColumnCount = 6, BackColor = Color.Transparent, AutoScroll = true, Margin = Padding.Empty,
         };
-        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46 * _s));
-        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26));
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38 * _s));
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24));
         _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
         _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 16));
-        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
         _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
         c6.Resize += (s2, e2) => { try { _acctTable.Width = Math.Max((int)(420 * _s), c6.ClientSize.Width - Pad * 2); } catch { } };
         c6.Controls.Add(_acctTable);
@@ -564,7 +564,7 @@ public sealed class MainForm : Form
         var c3 = Card("常用操作", 220);
         var b3 = new FlowLayoutPanel
         {
-            Left = Pad, Top = (int)(58 * _s), Height = (int)(44 * _s),
+            Left = Pad, Top = (int)(54 * _s), Height = (int)(42 * _s),
             Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
         };
         b3.Controls.Add(FlatBtn("新建对话", (s2, e2) => NewChat()));
@@ -572,15 +572,21 @@ public sealed class MainForm : Form
         b3.Controls.Add(FlatBtn("检查更新", (s2, e2) => CheckUpdate()));
         var b3b = new FlowLayoutPanel
         {
-            Left = Pad, Top = (int)(112 * _s), Height = (int)(44 * _s),
+            Left = Pad, Top = (int)(104 * _s), Height = (int)(42 * _s),
             Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
         };
         b3b.Controls.Add(FlatBtn("设置", (s2, e2) => ShowSettings()));
         b3b.Controls.Add(FlatBtn("日志", (s2, e2) => OpenFile(Log.FilePath)));
         b3b.Controls.Add(FlatBtn("数据目录", (s2, e2) => OpenFolder(Log.Dir)));
-        b3b.Controls.Add(FlatBtn("放行防火墙", (s2, e2) => AddFirewallRule()));
+        var b3c = new FlowLayoutPanel
+        {
+            Left = Pad, Top = (int)(154 * _s), Height = (int)(42 * _s),
+            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
+        };
+        b3c.Controls.Add(FlatBtn("放行防火墙（需管理员）", (s2, e2) => AddFirewallRule()));
         c3.Controls.Add(b3);
         c3.Controls.Add(b3b);
+        c3.Controls.Add(b3c);
         grid.Controls.Add(c3, 1, 5);
 
         /* 客户端填写 */
@@ -589,16 +595,17 @@ public sealed class MainForm : Form
         {
             Left = Pad, Top = (int)(58 * _s), Width = (int)(520 * _s), Height = (int)(104 * _s),
             AutoSize = false, ForeColor = CText, Font = F(12f), BackColor = Color.Transparent, Tag = "fillw",
-            Text = "Base URL : http://127.0.0.1:8787/v1      # 局域网设备换成上面的局域网地址\r\n" +
+            Text = "Base URL : http://127.0.0.1:8787/v1\r\n" +
                    "API Key  : " + Prefs.ApiKey + "\r\n" +
-                   "Model    : deepseek                     # 任意名称均可",
+                   "Model    : deepseek",
         });
         c4.Controls.Add(new Label
         {
             Left = Pad, Top = (int)(166 * _s), Width = (int)(520 * _s), Height = (int)(58 * _s),
             AutoSize = false, ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent, Tag = "fillw",
-            Text = "局域网访问需放行防火墙（点上面的按钮或手动执行 netsh）；调用前请先在「对话页」登录官网，未登录时接口返回 503。\r\n" +
-                   "升级方式：下载新版 exe，关闭本程序后直接覆盖旧文件即可（数据与登录态在 %LOCALAPPDATA%\\DeepSeekWebAPI，不受影响）。",
+            Text = "局域网访问（设备端 Base URL 换成上面的局域网地址）需放行防火墙；\r\n" +
+                   "调用前请先在「对话页」登录官网，未登录时接口返回 503。\r\n" +
+                   "升级：下载新版 exe，关闭程序后直接覆盖旧文件（登录态与设置不受影响）。",
         });
         grid.Controls.Add(c4, 0, 6);
         grid.SetColumnSpan(c4, 2);
@@ -654,7 +661,7 @@ public sealed class MainForm : Form
         });
         var v = new Label
         {
-            Text = "—", Left = (int)(220 * _s), Top = y, AutoSize = false,
+            Text = "—", Left = (int)(150 * _s), Top = y, AutoSize = false,
             Height = (int)(23 * _s), Width = (int)(420 * _s),
             AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = CText, Font = F(FS_Value), BackColor = Color.Transparent, Tag = "kvval",
@@ -676,7 +683,7 @@ public sealed class MainForm : Form
             {
                 string k = c.Tag as string;
                 if (k == "fillw") c.Width = Math.Max((int)(140 * _s), w - Pad * 2);
-                else if (k == "kvval") c.Width = Math.Max((int)(120 * _s), w - (int)(220 * _s) - Pad);
+                else if (k == "kvval") c.Width = Math.Max((int)(90 * _s), w - (int)(150 * _s) - Pad);
             }
         }
         catch { }
@@ -1000,10 +1007,10 @@ public sealed class MainForm : Form
             if (_vLan != null) _vLan.Text = string.IsNullOrEmpty(eng.LanUrl) ? "—" : eng.LanUrl;
             if (_vKey != null) _vKey.Text = Prefs.ApiKey;
             if (_sideState != null)
-                _sideState.Text = "服务：" + (eng.ServiceRunning ? "运行中" : "已停止")
+                _sideState.Text = "服务 " + (eng.ServiceRunning ? "运行中" : "已停止")
                     + " · 端口 " + (eng.Port > 0 ? eng.Port : Prefs.Port) + "\r\n"
-                    + "局域网：" + (Prefs.LanEnabled ? "已开启" : "已关闭")
-                    + " · 轮换：" + (Prefs.RotateEnabled ? "第 " + AccountPool.I.CycleNo + " 轮" : "关");
+                    + "局域网 " + (Prefs.LanEnabled ? "开" : "关")
+                    + " · 轮换 " + (Prefs.RotateEnabled ? "第 " + AccountPool.I.CycleNo + " 轮" : "关");
             if (_tray != null && _tray.Visible)
             {
                 _tray.Text = Program.AppName + " · " + (eng.LanUrl.Length > 0 ? eng.LanUrl : ("127.0.0.1:" + eng.Port));
@@ -1375,7 +1382,7 @@ public sealed class MainForm : Form
                 {
                     Text = "—", Dock = DockStyle.Fill, ForeColor = c == 1 ? CText : CSub,
                     Font = F(c == 1 ? FS_Value : FS_Body), TextAlign = ContentAlignment.MiddleLeft,
-                    BackColor = Color.Transparent, Margin = new Padding(0, 0, (int)(6 * _s), 0),
+                    AutoEllipsis = true, BackColor = Color.Transparent, Margin = new Padding(0, 0, (int)(6 * _s), 0),
                 };
                 _acctTable.Controls.Add(lb, c, r + 1);
                 set[c] = lb;
@@ -1403,7 +1410,7 @@ public sealed class MainForm : Form
             else { st = s.NeedNewChat ? "就绪 · 待新开对话" : "就绪"; sc = COk; }
             set[2].Text = st; set[2].ForeColor = sc;
             set[3].Text = s.SentInSession + " / " + Prefs.SessionSendLimit;
-            set[4].Text = s.TotalCalls + " 次（成功 " + s.OkCalls + (s.RateLimitedCount > 0 ? "，限流 " + s.RateLimitedCount : "") + "）";
+            set[4].Text = s.TotalCalls + " 次" + (s.RateLimitedCount > 0 ? "（限流 " + s.RateLimitedCount + "）" : "");
             set[5].Text = s.LastUsedMs > 0 ? Ago(s.LastUsedMs) : "—";
         }
     }
