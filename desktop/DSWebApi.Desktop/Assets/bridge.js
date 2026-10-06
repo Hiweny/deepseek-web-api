@@ -43,9 +43,34 @@
 
   /* ================= 工具函数 ================= */
   function log(m) { try { console.log('[DSWB] ' + m); } catch (e) {} }
+
+  /* 限流看门狗：同一 reqId 只在等待期间存在一个 */
+  var rlWatchers = {};
+
   function emit(obj) {
     obj.t = Date.now();
+    if (obj && obj.type === 'reply' && obj.reqId && rlWatchers[obj.reqId]) {
+      try { clearInterval(rlWatchers[obj.reqId]); } catch (e) {}
+      delete rlWatchers[obj.reqId];
+    }
     try { window.DSB.onEvent(JSON.stringify(obj)); } catch (e) { log('emit fail: ' + e.message); }
+  }
+
+  /* 检测页面是否弹出「消息发送频繁 / 稍后重试」一类提示（中英文都覆盖） */
+  var RL_RE = /(频繁|太快|过于频繁|稍后(再|重)试|发送太频繁|too many requests|too frequent|rate limit|slow down|try again later)/i;
+  function detectRateLimitText() {
+    try {
+      var sel = '.ds-toast__content, .ds-toast, [class*="toast"], [role="alert"], [class*="alert"], [class*="notify"], [class*="message"]';
+      var nodes = document.querySelectorAll(sel);
+      for (var i = 0; i < nodes.length && i < 40; i++) {
+        var el = nodes[i];
+        var st = window.getComputedStyle ? getComputedStyle(el) : null;
+        if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
+        var t = (el.textContent || '').trim();
+        if (t && t.length <= 80 && RL_RE.test(t)) return t.replace(/\s+/g, ' ');
+      }
+    } catch (e) {}
+    return '';
   }
 
   /* ================= 防撤回：本地原始片段缓存 ================= */
@@ -607,6 +632,28 @@
       }
     }
     setTimeout(attempt, 60);
+
+    // 限流看门狗：点发送后 2 秒起持续观察页面提示；命中即上报并结束本 reqId
+    (function watchRateLimit() {
+      var started = Date.now();
+      rlWatchers[o.reqId] = setInterval(function () {
+        var txt = detectRateLimitText();
+        if (txt) {
+          try { clearInterval(rlWatchers[o.reqId]); } catch (e) {}
+          delete rlWatchers[o.reqId];
+          var rid = (o.sessionId && domWait[o.sessionId]) || domWait.__next;
+          if (rid === o.reqId) {
+            if (o.sessionId && domWait[o.sessionId] === rid) delete domWait[o.sessionId];
+            else if (domWait.__next === rid) delete domWait.__next;
+          }
+          emit({ type: 'rateLimited', reqId: o.reqId, via: 'dom', message: txt, sessionId: o.sessionId || '' });
+          emit({ type: 'reply', reqId: o.reqId, ok: false, via: 'dom', content: '', thinking: '',
+                 error: 'RATE_LIMITED: ' + txt, sessionId: o.sessionId || '', recalled: false });
+          return;
+        }
+        if (Date.now() - started > 300000) { try { clearInterval(rlWatchers[o.reqId]); } catch (e) {} delete rlWatchers[o.reqId]; }
+      }, 700);
+    })();
 
     setTimeout(function () {
       var rid = (o.sessionId && domWait[o.sessionId]) || domWait.__next;

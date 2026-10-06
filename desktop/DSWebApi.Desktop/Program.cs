@@ -33,6 +33,15 @@ internal static class Program
             Console.WriteLine(AppName + " " + Version);
             return;
         }
+        int rotAt = Array.FindIndex(args, a => a.Equals("--e2e-rotate", StringComparison.OrdinalIgnoreCase));
+        if (rotAt >= 0)
+        {
+            int rounds = 10;
+            if (rotAt + 1 < args.Length && int.TryParse(args[rotAt + 1], out var rc)) rounds = rc;
+            Environment.ExitCode = RotateTest.Run(Environment.GetEnvironmentVariable("DS_TEST_ACCOUNTS"), rounds);
+            return;
+        }
+
         int probeAt = Array.FindIndex(args, a => a.Equals("--probe-device", StringComparison.OrdinalIgnoreCase));
         if (probeAt >= 0)
         {

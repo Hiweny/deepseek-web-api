@@ -49,6 +49,11 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
     private volatile string _contextInfo = "—";
     private volatile HashSet<string> _lastToolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+    /* ---- 多账号轮换：单次发送的结果（队列串行执行，无需并发保护） ---- */
+    private string _sendErr = null;
+    private string _sendSessionId = "";
+    private bool _sendOk;
+
     public string ContextInfoText => _contextInfo;
 
     /* ---------------- 内部 ---------------- */
@@ -231,6 +236,41 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         catch (Exception) { }
     }
 
+    /// <summary>单个账号的 bridge 事件（多账号时每个账号各有一条）。</summary>
+    public void OnSlotStatus(AccountSlot slot, string json)
+    {
+        if (slot == null || string.IsNullOrEmpty(json)) return;
+        try
+        {
+            var o = Json.TryParse(json) as JObj;
+            if (o == null) return;
+            string type = o.Str("type");
+            if (type == "probe" || type == "boot")
+            {
+                if (o.Has("loggedIn")) slot.LoggedIn = o.Bool("loggedIn");
+                if (o.Has("ready")) slot.PageReady = o.Bool("ready");
+                string sid = o.Str("sessionId", "");
+                if (sid.Length > 0) slot.SessionId = sid;
+            }
+            else if (type == "session")
+            {
+                slot.SessionId = o.Str("sessionId", "");
+            }
+            else if (type == "newChat")
+            {
+                slot.SentInSession = 0;
+                string sid2 = o.Str("sessionId", "");
+                if (sid2.Length > 0) slot.SessionId = sid2;
+            }
+            else if (type == "rateLimited")
+            {
+                AccountPool.I.MarkCooldown(slot, Prefs.CooldownMinutes, o.Str("message", "消息发送频繁"));
+            }
+        }
+        catch { }
+        Notify();
+    }
+
     /* ================= 会话上下文监控 ================= */
 
     /// <summary>手动新建对话后重置上下文计数。</summary>
@@ -374,6 +414,9 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         o.Set("total_calls", (long)TotalCalls);
         o.Set("ok_calls", (long)OkCalls);
         o.Set("port", (long)Port);
+        o.Set("rotate_enabled", Prefs.RotateEnabled);
+        o.Set("accounts_summary", AccountPool.I.SummaryText());
+        o.Set("accounts", (long)AccountPool.I.Snapshot().Count);
         o.Set("endpoint", "http://127.0.0.1:" + Port + "/v1");
         o.Set("lan_endpoint", LanUrl);
         res.SendJson(o.ToJson());
@@ -398,12 +441,33 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         catch (Exception) { res.SendJson(400, ErrJson("Invalid JSON body", "invalid_request_error")); return; }
         if (body == null) { res.SendJson(400, ErrJson("Invalid JSON body", "invalid_request_error")); return; }
 
-        if (!WebBridge.I.IsAttached)
+        // ---- 选账号：轮换开启时从账号池挑一个；关闭时就是原来的单账号路径 ----
+        bool rotate = Prefs.RotateEnabled && AccountPool.I.AnyUsable;
+        AccountSlot slot = null;
+        bool needNewChat = false;
+        WebBridge wb = WebBridge.I;
+        if (rotate)
         {
-            res.SendJson(503, ErrJson("网页桥未就绪：请保持本程序运行并在「对话页」登录 DeepSeek 官网。", "server_error"));
-            return;
+            slot = AccountPool.I.Acquire(out needNewChat);
+            if (slot == null || slot.Bridge == null)
+            {
+                int wait = AccountPool.I.MinCooldownLeftSec();
+                Log.Write("所有账号都在冷却/不可用，拒绝请求（等 " + wait + "s）");
+                res.SendJson(429, ErrJson("所有账号都在冷却中（消息发送频繁），请在 " + AccountSlot.FmtLeft(wait) + " 后重试。",
+                    "rate_limit_error"));
+                return;
+            }
+            wb = slot.Bridge;
         }
-        if (!WebBridge.I.BridgeLoaded)
+        else
+        {
+            if (!WebBridge.I.IsAttached)
+            {
+                res.SendJson(503, ErrJson("网页桥未就绪：请保持本程序运行并在「对话页」登录 DeepSeek 官网。", "server_error"));
+                return;
+            }
+        }
+        if (!wb.BridgeLoaded)
         {
             res.SendJson(503, ErrJson("桥接脚本 bridge.js 未载入（内嵌资源异常）：请确认安装包完整，或把 bridge.js 放到 exe 同目录的 Assets\\ 下后重启。", "server_error"));
             return;
@@ -433,7 +497,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         if (re.Equals("none", StringComparison.OrdinalIgnoreCase)) thinking = "off";
         else if (re.Length > 0) thinking = "on";
         else if (model.ToLowerInvariant().Contains("reasoner") || model.ToLowerInvariant().Contains("think")) thinking = "on";
-        WebBridge.I.Configure(thinking, search);
+        wb.Configure(thinking, search);
 
         Interlocked.Increment(ref _inflight);
         Interlocked.Increment(ref _totalCalls);
@@ -444,14 +508,27 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         {
             try
             {
+                _sendErr = null; _sendSessionId = ""; _sendOk = false;
+                if (slot != null && needNewChat)
+                {
+                    Log.Write("账号 " + slot.Name + " 本轮已发满 " + Math.Max(1, Prefs.SessionSendLimit) + " 次 → 新开对话");
+                    var nc = slot.Bridge.NewChat();
+                    AccountPool.I.ResetSession(slot, nc.Str("sessionId"));
+                }
                 // 附件：逐个注入官网，等待上传/解析
                 foreach (var a in pb.attachments)
                 {
-                    var r = WebBridge.I.AttachFile(a.Name, a.Mime, a.Base64, 150);
+                    var r = wb.AttachFile(a.Name, a.Mime, a.Base64, 150);
                     if (!r.Bool("ok")) Log.Write("附件挂载失败: " + a.Name + " " + r.Str("error"));
                 }
-                if (stream) RunStream(model, pb, res, toolNames);
-                else RunBlocking(model, pb, res, toolNames);
+                if (stream) RunStream(model, pb, res, toolNames, wb);
+                else RunBlocking(model, pb, res, toolNames, wb);
+                if (slot != null)
+                {
+                    AccountPool.I.OnSent(slot, _sendOk, _sendOk ? null : _sendErr, _sendSessionId);
+                    if (!_sendOk) Log.Write("账号 " + slot.Name + " 本次失败: " + _sendErr
+                        + (AccountPool.LooksRateLimited(_sendErr) ? "（已标记限流并冷却）" : ""));
+                }
                 long cost = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - t0;
                 Interlocked.Increment(ref _okCalls);
                 _lastCallInfo = "成功 · " + (cost / 1000.0).ToString("F1") + "s · " + (pb.attachments.Count > 0 ? pb.attachments.Count + "附件 · " : "");
@@ -471,15 +548,17 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         });
     }
 
-    private void RunBlocking(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames)
+    private void RunBlocking(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb)
     {
         int timeout = Prefs.TimeoutSec;
-        var r = WebBridge.I.SendPrompt(pb.text, null, timeout);
+        var r = wb.SendPrompt(pb.text, null, timeout);
+        _sendSessionId = r.Str("sessionId", "");
         string thinking = r.Str("thinking");
         string content = r.Str("content");
         if (content.Length == 0 && thinking.Length == 0)
         {
             string err = r.Str("error", "EMPTY");
+            _sendOk = false; _sendErr = err;
             res.SendJson(502, ErrJson("DeepSeek 未返回内容: " + err, "server_error"));
             _lastCallInfo = "失败: " + err;
             return;
@@ -489,6 +568,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var outObj = OpenAiAdapter.BuildCompletion(id, model, created, cr.thinking, cr.content, cr.toolCalls,
             cr.finishReason, OpenAiAdapter.EstTokens(pb.text), OpenAiAdapter.EstTokens(cr.content + cr.thinking));
+        _sendOk = true; _sendErr = null;
         res.SendJson(outObj.ToJson());
         _lastCallInfo = "成功 · " + (cr.toolCalls != null ? "工具调用" : cr.content.Length + "字")
             + (r.Bool("recalled") ? " · 防撤回" : "");
@@ -499,7 +579,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
 
     private const int HOLD = 32;
 
-    private void RunStream(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames)
+    private void RunStream(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb)
     {
         int timeout = Prefs.TimeoutSec;
         string id = OpenAiAdapter.NewId();
@@ -522,7 +602,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
             lock (gate) { try { res.SseComment("ping"); } catch { } }
         }, null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
 
-        WebBridge.I.SendPromptStream(pb.text, null, timeout, new StreamListener(
+        wb.SendPromptStream(pb.text, null, timeout, new StreamListener(
             onDelta: (th, ct, recalled) =>
             {
                 lock (gate)
@@ -578,6 +658,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                             WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", "\n[错误] " + r.Str("error", "UNKNOWN")), null));
                             WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, new JObj(), "stop"));
                             FinishSse(res, gate);
+                            _sendOk = false; _sendErr = r.Str("error", "UNKNOWN"); _sendSessionId = r.Str("sessionId", "");
                             _lastCallInfo = "失败: " + r.Str("error");
                             return;
                         }
@@ -622,6 +703,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                             WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, new JObj(), "stop"));
                             _lastCallInfo = "成功 · " + content.Length + "字" + (r.Bool("recalled") ? " · 防撤回" : "");
                         }
+                        _sendOk = true; _sendErr = null; _sendSessionId = r.Str("sessionId", "");
                         AfterReply(r, pb.text);
                         FinishSse(res, gate);
                     }

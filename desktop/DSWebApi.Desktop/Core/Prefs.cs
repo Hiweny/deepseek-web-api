@@ -89,6 +89,16 @@ public static class Prefs
     public static bool AutoStart { get => GetBool("autostart", false); set => Set("autostart", value); }
     public static bool LanEnabled { get => GetBool("lan_enabled", true); set => Set("lan_enabled", value); }
     public static bool StartOnBootServer { get => GetBool("server_on_boot", true); set => Set("server_on_boot", value); }
+    /* ---- 多账号轮换（桌面端特有） ---- */
+    /// <summary>多账号轮换总开关（关闭时与单账号版本行为完全一致）。</summary>
+    public static bool RotateEnabled { get => GetBool("rotate_enabled", false); set => Set("rotate_enabled", value); }
+    /// <summary>同一账号在同一会话内最多连发几次，到点换下一个账号（默认 5）。</summary>
+    public static int SessionSendLimit { get => GetInt("session_send_limit", 5); set => Set("session_send_limit", value); }
+    /// <summary>命中「消息发送频繁」后的冷却分钟数（默认 30）。</summary>
+    public static int CooldownMinutes { get => GetInt("cooldown_minutes", 30); set => Set("cooldown_minutes", value); }
+    /// <summary>账号槽列表（JSON 数组持久化）。</summary>
+    public static string AccountsJson { get => GetStr("accounts", ""); set => Set("accounts", value ?? ""); }
+
     /// <summary>界面缩放百分比（等比放大整套 UI 的字号与控件）。</summary>
     public static int UiScalePct { get => GetInt("ui_scale_pct", 100); set => Set("ui_scale_pct", value); }
 }

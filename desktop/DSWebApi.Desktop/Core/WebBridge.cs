@@ -29,6 +29,9 @@ public sealed class WebBridge
     private volatile IStatusListener _listener;
     private string _bridgeJs = "";
 
+    /// <summary>所属账号名（日志用，多账号轮换时区分）。</summary>
+    public string Name = "";
+
     public string BridgeJs { get => _bridgeJs; set => _bridgeJs = value ?? ""; }
     public void SetStatusListener(IStatusListener l) => _listener = l;
     public bool IsAttached => _wv != null;

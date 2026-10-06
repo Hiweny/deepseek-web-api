@@ -179,6 +179,26 @@ jobs:
           Copy-Item "$dir\*.png" e2e-out -ErrorAction SilentlyContinue
           if ((Test-Path $log) -and ((Get-Content $log -Raw) -match 'E2E_OK')) { Write-Host "E2E_RESULT=OK" } else { Write-Host "E2E_RESULT=FAIL" }
 
+      - name: E2E rotate (multi-account round-robin)
+        if: env.E2E_ENABLED == 'true'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          DS_TEST_ACCOUNTS: ${{ secrets.DS_TEST_ACCOUNTS }}
+        run: |
+          $exe = Join-Path $PWD "publish\DeepSeekWebAPI.exe"
+          $log = Join-Path $env:LOCALAPPDATA "DeepSeekWebAPI\app.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force e2e-out | Out-Null
+          Write-Host "启动多账号轮换测试（3 个账号，凭据走环境变量）"
+          $p = Start-Process -FilePath $exe -ArgumentList @('--e2e-rotate','12') -PassThru
+          if (-not $p.WaitForExit(1500000)) { Write-Host "!! 超时"; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          Write-Host "rotate exit = $($p.ExitCode)"
+          if (Test-Path $log) { Get-Content $log }
+          $dir = Join-Path $env:LOCALAPPDATA "DeepSeekWebAPI"
+          Copy-Item "$dir\*.log" e2e-out -ErrorAction SilentlyContinue
+          if ((Test-Path $log) -and ((Get-Content $log -Raw) -match 'ROTATE_OK')) { Write-Host "ROTATE_RESULT=OK" } else { Write-Host "ROTATE_RESULT=FAIL" }
+
       - name: Device isolation probe (multi-instance device_id)
         continue-on-error: true
         shell: pwsh
