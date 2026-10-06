@@ -33,6 +33,16 @@ internal static class Program
             Console.WriteLine(AppName + " " + Version);
             return;
         }
+        int probeAt = Array.FindIndex(args, a => a.Equals("--probe-device", StringComparison.OrdinalIgnoreCase));
+        if (probeAt >= 0)
+        {
+            int probeCount = 2;
+            if (probeAt + 1 < args.Length && int.TryParse(args[probeAt + 1], out var pc)) probeCount = pc;
+            bool useProfiles = args.Any(a => a.Equals("--profiles", StringComparison.OrdinalIgnoreCase));
+            Environment.ExitCode = DeviceProbe.Run(probeCount, useProfiles);
+            return;
+        }
+
         int e2eAt = Array.FindIndex(args, a => a.Equals("--e2e", StringComparison.OrdinalIgnoreCase));
         if (e2eAt >= 0)
         {

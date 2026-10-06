@@ -179,6 +179,26 @@ jobs:
           Copy-Item "$dir\*.png" e2e-out -ErrorAction SilentlyContinue
           if ((Test-Path $log) -and ((Get-Content $log -Raw) -match 'E2E_OK')) { Write-Host "E2E_RESULT=OK" } else { Write-Host "E2E_RESULT=FAIL" }
 
+      - name: Device isolation probe (multi-instance device_id)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD "publish\DeepSeekWebAPI.exe"
+          $log = Join-Path $env:LOCALAPPDATA "DeepSeekWebAPI\app.log"
+          New-Item -ItemType Directory -Force probe-out | Out-Null
+          $modes = @(
+            @{ tag = 'separate-udf'; args = @('--probe-device','3') },
+            @{ tag = 'multi-profile'; args = @('--probe-device','3','--profiles') }
+          )
+          foreach ($m in $modes) {
+            Write-Host "===== 设备指纹探针: $($m.tag) ($($m.args -join ' ')) ====="
+            Remove-Item $log -ErrorAction SilentlyContinue
+            $p = Start-Process -FilePath $exe -ArgumentList $m.args -PassThru
+            if (-not $p.WaitForExit(420000)) { Write-Host "!! 超时"; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+            Write-Host "probe exit = $($p.ExitCode)"
+            if (Test-Path $log) { Get-Content $log; Copy-Item $log (Join-Path $PWD "probe-out\probe-$($m.tag).log") -Force }
+          }
+
       - name: Upload E2E diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -187,6 +207,7 @@ jobs:
           path: |
             desktop/DSWebApi.Desktop/e2e-out/*
             desktop/DSWebApi.Desktop/ui-shot/*
+            desktop/DSWebApi.Desktop/probe-out/*
           if-no-files-found: ignore
 
       # ---------- 5) 收集产物 ----------
