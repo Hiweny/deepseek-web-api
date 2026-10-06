@@ -92,8 +92,8 @@ public static class Prefs
     /* ---- 多账号轮换（桌面端特有） ---- */
     /// <summary>多账号轮换总开关（关闭时与单账号版本行为完全一致）。</summary>
     public static bool RotateEnabled { get => GetBool("rotate_enabled", false); set => Set("rotate_enabled", value); }
-    /// <summary>同一账号在同一会话内最多连发几次，到点换下一个账号（默认 5）。</summary>
-    public static int SessionSendLimit { get => GetInt("session_send_limit", 5); set => Set("session_send_limit", value); }
+    /// <summary>同一账号在同一个对话里最多连发几次，到点换下一个账号（默认 2）。</summary>
+    public static int SessionSendLimit { get => GetInt("chat_send_limit", 2); set => Set("chat_send_limit", value); }
     /// <summary>命中「消息发送频繁」后的冷却分钟数（默认 30）。</summary>
     public static int CooldownMinutes { get => GetInt("cooldown_minutes", 30); set => Set("cooldown_minutes", value); }
     /// <summary>账号槽列表（JSON 数组持久化）。</summary>

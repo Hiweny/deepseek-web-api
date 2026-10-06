@@ -14,17 +14,26 @@ namespace DSWebApi.Desktop.UI;
 public sealed class MainForm : Form
 {
     /* ---------------- 配色 ---------------- */
-    private static readonly Color CBg = Color.FromArgb(0x0D, 0x10, 0x15);
-    private static readonly Color CSide = Color.FromArgb(0x11, 0x15, 0x1C);
-    private static readonly Color CCard = Color.FromArgb(0x17, 0x1C, 0x24);
-    private static readonly Color CLine = Color.FromArgb(0x2A, 0x31, 0x3E);
-    private static readonly Color CText = Color.FromArgb(0xEA, 0xED, 0xF3);
-    private static readonly Color CSub = Color.FromArgb(0x93, 0x9E, 0xAF);
-    private static readonly Color CAccent = Color.FromArgb(0x5B, 0x96, 0xFF);
-    private static readonly Color CAccentDim = Color.FromArgb(0x1B, 0x26, 0x3E);
-    private static readonly Color COk = Color.FromArgb(0x3D, 0xD6, 0x8C);
-    private static readonly Color CWarn = Color.FromArgb(0xFF, 0xB4, 0x4D);
-    private static readonly Color CBad = Color.FromArgb(0xFF, 0x6B, 0x6B);
+    private static readonly Color CBg = Color.FromArgb(0x0B, 0x0E, 0x14);
+    private static readonly Color CSide = Color.FromArgb(0x0F, 0x13, 0x1A);
+    private static readonly Color CCard = Color.FromArgb(0x15, 0x1A, 0x23);
+    private static readonly Color CLine = Color.FromArgb(0x24, 0x2B, 0x38);
+    private static readonly Color CText = Color.FromArgb(0xE8, 0xEC, 0xF4);
+    private static readonly Color CSub = Color.FromArgb(0x8B, 0x95, 0xA8);
+    private static readonly Color CAccent = Color.FromArgb(0x4C, 0x8D, 0xFF);
+    private static readonly Color CAccentDim = Color.FromArgb(0x18, 0x24, 0x3D);
+    private static readonly Color COk = Color.FromArgb(0x36, 0xD3, 0x99);
+    private static readonly Color CWarn = Color.FromArgb(0xF5, 0xA5, 0x24);
+    private static readonly Color CBad = Color.FromArgb(0xF8, 0x71, 0x71);
+
+    /* 统一的间距 / 字号层级（避免「这又是小字、那又是拥挤」） */
+    private int Gap => (int)(14 * _s);          // 卡片之间
+    private int Pad => (int)(20 * _s);          // 卡片内边距
+    private int RowH => (int)(32 * _s);         // 键值行高
+    private float FS_Title => 13.5f;            // 卡片标题
+    private float FS_Body => 11.5f;             // 正文
+    private float FS_Value => 12.5f;            // 键值
+    private float FS_Page => 22f;               // 页面大标题
 
     private const string DsUrl = "https://chat.deepseek.com/";
     private const string WebHintText = "在此页登录 DeepSeek 官网；登录态由本程序保存，接口调用共用同一会话。";
@@ -39,6 +48,9 @@ public sealed class MainForm : Form
 
     private Panel _content;
     private Label _toast;
+    private TableLayoutPanel _acctTable;                       // 控制台「账号调用情况」表
+    private readonly Dictionary<string, Label[]> _tblRows = new Dictionary<string, Label[]>();
+    private Label _acctHead;                                   // 侧栏「账号」区的小状态
     private FlowLayoutPanel _acctFlow;          // 侧栏账号列表
     private FlowLayoutPanel _acctChips;         // 对话页账号切换条
     private Panel _acctHost;                    // 账号区容器
@@ -132,10 +144,10 @@ public sealed class MainForm : Form
             FlatStyle = FlatStyle.Flat,
             BackColor = primary ? CAccentDim : CCard,
             ForeColor = primary ? CAccent : CText,
-            Font = F(11.5f),
+            Font = F(FS_Body),
             Cursor = Cursors.Hand,
-            Margin = new Padding(0, 0, (int)(12 * _s), 0),
-            Padding = new Padding((int)(10 * _s), 0, (int)(10 * _s), 0),
+            Margin = new Padding(0, 0, (int)(10 * _s), 0),
+            Padding = new Padding((int)(12 * _s), 0, (int)(12 * _s), 0),
             UseVisualStyleBackColor = false,
         };
         b.FlatAppearance.BorderSize = 1;
@@ -153,8 +165,9 @@ public sealed class MainForm : Form
             BackColor = CCard,
             Height = (int)(height * _s),
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 0, (int)(14 * _s)),
+            Margin = new Padding(0, 0, 0, Gap),
         };
+        bool hasTitle = title != null;
         card.Paint += (s, e) =>
         {
             var g = e.Graphics;
@@ -162,13 +175,18 @@ public sealed class MainForm : Form
             using var pen = new Pen(CLine);
             using var path = Rounded(new Rectangle(0, 0, card.Width - 1, card.Height - 1), (int)(12 * _s));
             g.DrawPath(pen, path);
+            if (hasTitle)
+            {
+                using var br = new SolidBrush(CAccent);
+                g.FillRectangle(br, (int)(Pad * 0.6), (int)(20 * _s), (int)(3 * _s), (int)(15 * _s));
+            }
         };
-        if (title != null)
+        if (hasTitle)
         {
             card.Controls.Add(new Label
             {
-                Text = title, Left = (int)(22 * _s), Top = (int)(18 * _s), AutoSize = true,
-                ForeColor = CAccent, Font = F(13f, FontStyle.Bold), BackColor = Color.Transparent,
+                Text = title, Left = (int)(Pad * 0.6 + 11 * _s), Top = (int)(17 * _s), AutoSize = true,
+                ForeColor = CText, Font = F(FS_Title, FontStyle.Bold), BackColor = Color.Transparent,
             });
         }
         return card;
@@ -233,66 +251,79 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = CBg,
             Margin = Padding.Empty, Padding = Padding.Empty,
         };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 282 * _s));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300 * _s));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
-        /* ---- 侧边栏 ---- */
+        /* ---------- 侧边栏 ---------- */
         var side = new TableLayoutPanel
         {
             Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = CSide, Margin = Padding.Empty,
         };
-        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 122 * _s));
-        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 150 * _s));
-        side.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 152 * _s));
+        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 96 * _s));    // 品牌
+        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 122 * _s));   // 导航
+        side.RowStyles.Add(new RowStyle(SizeType.Percent, 100));         // 账号
+        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 152 * _s));   // 底部
         root.Controls.Add(side, 0, 0);
 
+        /* 品牌 */
         var head = new Panel { Dock = DockStyle.Fill, BackColor = CSide };
         try
         {
-            var ico = Icon;
-            if (ico != null)
+            if (Icon != null)
                 head.Controls.Add(new PictureBox
                 {
-                    Left = (int)(24 * _s), Top = (int)(32 * _s), Width = (int)(44 * _s), Height = (int)(44 * _s),
-                    SizeMode = PictureBoxSizeMode.Zoom, Image = ico.ToBitmap(), BackColor = Color.Transparent,
+                    Left = (int)(20 * _s), Top = (int)(26 * _s), Width = (int)(40 * _s), Height = (int)(40 * _s),
+                    SizeMode = PictureBoxSizeMode.Zoom, Image = Icon.ToBitmap(), BackColor = Color.Transparent,
                 });
         }
         catch { }
         head.Controls.Add(new Label
         {
-            Text = "DeepSeek Web API", Left = (int)(80 * _s), Top = (int)(30 * _s), AutoSize = true,
-            ForeColor = CText, Font = F(15f, FontStyle.Bold), BackColor = Color.Transparent,
+            Text = "DeepSeek Web API", Left = (int)(72 * _s), Top = (int)(24 * _s), AutoSize = true,
+            ForeColor = CText, Font = F(14f, FontStyle.Bold), BackColor = Color.Transparent,
         });
         head.Controls.Add(new Label
         {
-            Text = "Windows 桌面版 v" + Program.Version, Left = (int)(80 * _s), Top = (int)(64 * _s), AutoSize = true,
+            Text = "Windows 桌面版 · v" + Program.Version, Left = (int)(72 * _s), Top = (int)(50 * _s), AutoSize = true,
             ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
         });
         side.Controls.Add(head, 0, 0);
 
+        /* 导航 */
         var nav = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            BackColor = CSide, Padding = new Padding((int)(14 * _s), (int)(6 * _s), (int)(14 * _s), 0),
+            BackColor = CSide, Padding = new Padding((int)(16 * _s), (int)(8 * _s), (int)(16 * _s), (int)(8 * _s)),
         };
         side.Controls.Add(nav, 0, 1);
-        AddNav(nav, "\uD83C\uDF9B   控制台", 0);
-        AddNav(nav, "\uD83D\uDCAC   对话页", 1);
+        AddNav(nav, "\u25A0   控制台", 0);
+        AddNav(nav, "\u25A1   对话页", 1);
 
-        /* ---- 账号区：多开 + 轮换 ---- */
-        _acctHost = new Panel { Dock = DockStyle.Fill, BackColor = CSide, Padding = new Padding((int)(14 * _s), (int)(4 * _s), (int)(14 * _s), 0) };
+        /* 账号区 */
+        _acctHost = new Panel { Dock = DockStyle.Fill, BackColor = CSide, Padding = new Padding((int)(16 * _s), (int)(2 * _s), (int)(16 * _s), (int)(6 * _s)) };
         var acctGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CSide, Margin = Padding.Empty };
-        acctGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30 * _s));
+        acctGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34 * _s));
         acctGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        acctGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48 * _s));
+        acctGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 52 * _s));
         _acctHost.Controls.Add(acctGrid);
-        acctGrid.Controls.Add(new Label
+
+        var acctHeadRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = CSide, Margin = Padding.Empty };
+        acctHeadRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        acctHeadRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130 * _s));
+        acctHeadRow.Controls.Add(new Label
         {
-            Text = "账号 · 多开轮换", Dock = DockStyle.Fill, ForeColor = CSub, Font = F(10.5f),
+            Text = "账号", Dock = DockStyle.Fill, ForeColor = CSub, Font = F(10.5f),
             TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent,
         }, 0, 0);
+        _acctHead = new Label
+        {
+            Text = "—", Dock = DockStyle.Fill, ForeColor = CSub, Font = F(10.5f),
+            TextAlign = ContentAlignment.MiddleRight, BackColor = Color.Transparent,
+        };
+        acctHeadRow.Controls.Add(_acctHead, 1, 0);
+        acctGrid.Controls.Add(acctHeadRow, 0, 0);
+
         _acctFlow = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
@@ -302,26 +333,27 @@ public sealed class MainForm : Form
         {
             try
             {
-                int w = Math.Max((int)(150 * _s), _acctFlow.ClientSize.Width - (int)(8 * _s));
+                int w = Math.Max((int)(160 * _s), _acctFlow.ClientSize.Width - (int)(6 * _s));
                 foreach (Control c in _acctFlow.Controls) c.Width = w;
             }
             catch { }
         };
         acctGrid.Controls.Add(_acctFlow, 0, 1);
-        var addAcct = FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive());
+        var addAcct = FlatBtn("＋ 添加账号", (s2, e2) => AddAccountInteractive());
         addAcct.Dock = DockStyle.Fill;
-        addAcct.Margin = new Padding(0, (int)(6 * _s), 0, (int)(8 * _s));
+        addAcct.MinimumSize = Size.Empty;
+        addAcct.Margin = new Padding(0, (int)(6 * _s), 0, 0);
         acctGrid.Controls.Add(addAcct, 0, 2);
         side.Controls.Add(_acctHost, 0, 2);
 
+        /* 底部 */
         var foot = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CSide,
-            Padding = new Padding((int)(18 * _s), 0, (int)(18 * _s), (int)(14 * _s)),
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = CSide,
+            Padding = new Padding((int)(16 * _s), 0, (int)(16 * _s), (int)(14 * _s)),
         };
-        foot.RowCount = 4;
         foot.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 40 * _s));
+        foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 46 * _s));
         foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 48 * _s));
         foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 48 * _s));
         _sideState = new Label
@@ -331,15 +363,15 @@ public sealed class MainForm : Form
         };
         foot.Controls.Add(_sideState, 0, 1);
         var stBtn = FlatBtn("设置…", (s, e) => ShowSettings());
-        stBtn.Dock = DockStyle.Fill; stBtn.Margin = new Padding(0, 0, 0, (int)(8 * _s));
+        stBtn.Dock = DockStyle.Fill; stBtn.MinimumSize = Size.Empty; stBtn.Margin = new Padding(0, 0, 0, (int)(8 * _s));
         foot.Controls.Add(stBtn, 0, 2);
         var exitBtn = FlatBtn("退出程序", (s, e) => { _reallyExit = true; Close(); });
-        exitBtn.Dock = DockStyle.Fill; exitBtn.Margin = Padding.Empty;
+        exitBtn.Dock = DockStyle.Fill; exitBtn.MinimumSize = Size.Empty; exitBtn.Margin = Padding.Empty;
         foot.Controls.Add(exitBtn, 0, 3);
-        side.Controls.Add(foot, 0, 2);
+        side.Controls.Add(foot, 0, 3);
 
-        /* ---- 内容区 ---- */
-        _content = new Panel { Dock = DockStyle.Fill, BackColor = CBg, Padding = new Padding((int)(30 * _s), (int)(26 * _s), (int)(30 * _s), (int)(20 * _s)) };
+        /* ---------- 内容区 ---------- */
+        _content = new Panel { Dock = DockStyle.Fill, BackColor = CBg, Padding = new Padding((int)(26 * _s), (int)(22 * _s), (int)(26 * _s), (int)(14 * _s)) };
         root.Controls.Add(_content, 1, 0);
 
         _pages.Add(BuildConsolePage());
@@ -363,16 +395,16 @@ public sealed class MainForm : Form
         var b = new Button
         {
             Text = text,
-            Width = (int)(254 * _s),
-            Height = (int)(60 * _s),
+            Width = (int)(268 * _s),
+            Height = (int)(52 * _s),
             FlatStyle = FlatStyle.Flat,
             TextAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding((int)(18 * _s), 0, 0, 0),
             BackColor = CSide,
-            ForeColor = CText,
-            Font = F(13.5f),
+            ForeColor = CSub,
+            Font = F(13f),
             Cursor = Cursors.Hand,
-            Margin = new Padding(0, (int)(5 * _s), 0, (int)(5 * _s)),
+            Margin = new Padding(0, (int)(3 * _s), 0, (int)(3 * _s)),
             UseVisualStyleBackColor = false,
         };
         b.FlatAppearance.BorderSize = 0;
@@ -390,8 +422,8 @@ public sealed class MainForm : Form
         for (int i = 0; i < _navBtns.Count; i++)
         {
             _navBtns[i].BackColor = i == index ? CAccentDim : CSide;
-            _navBtns[i].ForeColor = i == index ? CAccent : CText;
-            _navBtns[i].Font = F(13.5f, i == index ? FontStyle.Bold : FontStyle.Regular);
+            _navBtns[i].ForeColor = i == index ? CAccent : CSub;
+            _navBtns[i].Font = F(13f, i == index ? FontStyle.Bold : FontStyle.Regular);
         }
         if (index == 1 && !_webTried) _ = InitWebAsync();
         RefreshStats();
@@ -402,136 +434,156 @@ public sealed class MainForm : Form
     private Control BuildConsolePage()
     {
         var host = new Panel { Dock = DockStyle.Fill, BackColor = CBg, AutoScroll = true };
-        // 注意：TableLayoutPanel 一旦 AutoSize，Dock/Width 会被它自己重算，导致「内容不铺满窗口」。
-        // 这里用 MaximumSize.Width 强制列宽随窗口变化，高度仍由内容决定。
-        var inner = new TableLayoutPanel
+        var grid = new TableLayoutPanel
         {
-            // AutoSize 必须为 false：TableLayoutPanel 一旦 AutoSize，就会用「自身首选宽度」覆盖外部设定的宽度，
-            // 表现就是窗口放大后内容不铺满（右侧留一大片空白）。这里宽度由窗口决定，高度按内容算。
-            AutoSize = false, Location = new Point(0, 0),
-            ColumnCount = 1, BackColor = CBg, Margin = Padding.Empty,
+            AutoSize = false, Location = new Point(0, 0), ColumnCount = 2,
+            BackColor = CBg, Margin = Padding.Empty, Padding = Padding.Empty,
         };
-        inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        host.Controls.Add(inner);
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        int[] rows = { 46, 30, 122, 258, 266, 232, 244, 12 };
+        foreach (var r in rows) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, (int)(r * _s)));
+        host.Controls.Add(grid);
 
         void Sync()
         {
             try
             {
-                // 注意：AutoScroll 面板的 ClientSize 已经扣除了滚动条宽度，这里不能再减一次，
-                // 否则右边会多出一条空白（实测约 -47px）。只留 8px 余量。
-                int w = Math.Max((int)(640 * _s), host.ClientSize.Width - 8);
-                inner.Width = w;
-                inner.Height = inner.GetPreferredSize(new Size(w, 0)).Height;
+                int w = Math.Max((int)(880 * _s), host.ClientSize.Width - 8);
+                grid.Width = w;
+                int h = 0;
+                for (int i = 0; i < grid.RowStyles.Count; i++) h += (int)grid.RowStyles[i].Height;
+                grid.Height = h;
             }
             catch { }
         }
         host.HandleCreated += (s, e) => Sync();
         host.ClientSizeChanged += (s, e) => Sync();
 
-        inner.Controls.Add(new Label
+        /* 标题 */
+        var t = new Label
         {
-            Text = "控制台", AutoSize = true, ForeColor = CText, Font = F(24f, FontStyle.Bold),
-            Margin = new Padding(0, 0, 0, (int)(6 * _s)), BackColor = Color.Transparent,
-        });
-        inner.Controls.Add(new Label
+            Text = "控制台", AutoSize = true, ForeColor = CText, Font = F(FS_Page, FontStyle.Bold),
+            Margin = new Padding(0, 0, 0, (int)(4 * _s)), BackColor = Color.Transparent,
+        };
+        grid.Controls.Add(t, 0, 0);
+        grid.SetColumnSpan(t, 2);
+        var sub = new Label
         {
-            Text = "把 chat.deepseek.com 官网封装成本机 / 局域网的 OpenAI 兼容接口",
-            AutoSize = true, ForeColor = CSub, Font = F(11.5f),
-            Margin = new Padding(0, 0, 0, (int)(20 * _s)), BackColor = Color.Transparent,
-        });
+            Text = "把 chat.deepseek.com 官网封装成本机 / 局域网的 OpenAI 兼容接口", AutoSize = true,
+            ForeColor = CSub, Font = F(FS_Body), Margin = new Padding(0, 0, 0, (int)(14 * _s)), BackColor = Color.Transparent,
+        };
+        grid.Controls.Add(sub, 0, 1);
+        grid.SetColumnSpan(sub, 2);
 
-        /* 三块状态磁贴 */
+        /* 状态磁贴 */
         var tiles = new TableLayoutPanel
         {
-            ColumnCount = 3, RowCount = 1, Dock = DockStyle.Top,
-            Height = (int)(118 * _s), BackColor = CBg, Margin = new Padding(0, 0, 0, (int)(16 * _s)),
+            ColumnCount = 3, RowCount = 1, Dock = DockStyle.Fill, BackColor = CBg,
+            Margin = new Padding(0, 0, 0, (int)(14 * _s)),
         };
         for (int i = 0; i < 3; i++) tiles.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
         tiles.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _vState = StatTile(tiles, 0, "服务状态", CWarn);
         _vWeb = StatTile(tiles, 1, "网页 / 桥接", CWarn);
         _vLogin = StatTile(tiles, 2, "登录状态", CWarn);
-        inner.Controls.Add(tiles);
+        grid.Controls.Add(tiles, 0, 2);
+        grid.SetColumnSpan(tiles, 2);
 
-        /* 接口信息：3 行键值 + 一行按钮（按钮放在最后一行下方，避免与 API Key 重叠） */
-        var c1 = Card("接口信息", 224);
-        int y = (int)(58 * _s);
+        /* 接口信息 */
+        var c1 = Card("接口信息", 246);
+        int y = (int)(56 * _s);
         _vBase = KV(c1, "Base URL（本机）", ref y);
         _vLan = KV(c1, "Base URL（局域网）", ref y);
         _vKey = KV(c1, "API Key", ref y);
         var b1 = new FlowLayoutPanel
         {
-            Left = (int)(22 * _s), Top = y + (int)(10 * _s), Height = (int)(44 * _s),
-            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Left = Pad, Top = y + (int)(12 * _s), Height = (int)(44 * _s),
+            Width = (int)(760 * _s), BackColor = Color.Transparent, WrapContents = false,
         };
         b1.Controls.Add(FlatBtn("复制 Base URL", (s2, e2) => Copy(BaseUrl(true)), true));
         b1.Controls.Add(FlatBtn("复制 API Key", (s2, e2) => Copy(Prefs.ApiKey)));
         b1.Controls.Add(FlatBtn("复制局域网地址", (s2, e2) => Copy(BaseUrl(false))));
         c1.Controls.Add(b1);
-        inner.Controls.Add(Wrap(c1));
+        grid.Controls.Add(c1, 0, 3);
 
         /* 多账号轮换 */
-        var c5 = Card("多账号轮换", 224);
-        int y5 = (int)(58 * _s);
+        var c5 = Card("多账号轮换", 246);
+        int y5 = (int)(56 * _s);
         _vRotate = KV(c5, "轮换状态", ref y5);
         var c5note = new Label
         {
-            Left = (int)(22 * _s), Top = y5 + (int)(2 * _s), Width = (int)(1000 * _s), Height = (int)(52 * _s),
+            Left = Pad, Top = y5 + (int)(2 * _s), Width = (int)(760 * _s), Height = (int)(62 * _s),
             ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
-            Text = "开启后：每个账号一次会话最多连发 " + Prefs.SessionSendLimit + " 次就换下一个账号；命中「消息发送频繁」自动冷却 "
-                 + Prefs.CooldownMinutes + " 分钟。\r\n关闭 = 原来的单账号模式（现有登录态与行为都不变）。",
+            Text = "顺序轮流：每个账号在同一个对话里连发 " + Prefs.SessionSendLimit + " 次 → 换下一个账号；\r\n"
+                 + "全部账号轮完一圈 → 全员新开对话（不在旧对话上继续）；命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。",
         };
         c5.Controls.Add(c5note);
         var b5 = new FlowLayoutPanel
         {
-            Left = (int)(22 * _s), Top = y5 + (int)(60 * _s), Height = (int)(46 * _s),
-            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Left = Pad, Top = y5 + (int)(70 * _s), Height = (int)(44 * _s),
+            Width = (int)(760 * _s), BackColor = Color.Transparent, WrapContents = false,
         };
         b5.Controls.Add(FlatBtn("开关轮换", (s2, e2) => ToggleRotate(), true));
-        b5.Controls.Add(FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive()));
-        b5.Controls.Add(FlatBtn("去对话页", (s2, e2) => { SwitchPage(1); SelectAccount(_currentAccountId); }));
+        b5.Controls.Add(FlatBtn("＋ 添加账号", (s2, e2) => AddAccountInteractive()));
+        b5.Controls.Add(FlatBtn("调整次数…", (s2, e2) => EditSendLimit()));
         c5.Controls.Add(b5);
-        inner.Controls.Add(Wrap(c5));
+        grid.Controls.Add(c5, 1, 3);
+
+        /* 账号调用情况 */
+        var c6 = Card("账号调用情况（轮换顺序）", 254);
+        _acctTable = new TableLayoutPanel
+        {
+            Left = Pad, Top = (int)(56 * _s), Width = (int)(860 * _s), Height = (int)(180 * _s),
+            ColumnCount = 6, BackColor = Color.Transparent, AutoScroll = true, Margin = Padding.Empty,
+        };
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46 * _s));
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26));
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 16));
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
+        _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
+        _acctTable.Resize += (s2, e2) => { try { _acctTable.Width = Math.Max((int)(520 * _s), c6.ClientSize.Width - Pad * 2); } catch { } };
+        c6.Controls.Add(_acctTable);
+        grid.Controls.Add(c6, 0, 4);
+        grid.SetColumnSpan(c6, 2);
 
         /* 运行数据 */
-        var c2 = Card("运行数据", 172);
-        y = (int)(58 * _s);
+        var c2 = Card("运行数据", 220);
+        y = (int)(56 * _s);
         _vCalls = KV(c2, "调用统计", ref y);
         _vCtx = KV(c2, "会话上下文", ref y);
         _vLast = KV(c2, "最近一次", ref y);
-        inner.Controls.Add(Wrap(c2));
+        grid.Controls.Add(c2, 0, 5);
 
-        /* 常用操作（两行按钮，行距固定，互不重叠） */
-        var c3 = Card("常用操作", 178);
+        /* 常用操作 */
+        var c3 = Card("常用操作", 220);
         var b3 = new FlowLayoutPanel
         {
-            Left = (int)(22 * _s), Top = (int)(58 * _s), Height = (int)(46 * _s),
-            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Left = Pad, Top = (int)(58 * _s), Height = (int)(44 * _s),
+            Width = (int)(760 * _s), BackColor = Color.Transparent, WrapContents = false,
         };
         b3.Controls.Add(FlatBtn("新建对话", (s2, e2) => NewChat()));
         b3.Controls.Add(FlatBtn("重载网页", (s2, e2) => ReloadWeb()));
-        b3.Controls.Add(FlatBtn("放行防火墙（需管理员）", (s2, e2) => AddFirewallRule()));
-        b3.Controls.Add(FlatBtn("复制 netsh 命令", (s2, e2) => { Copy(FirewallCmd()); Toast("netsh 命令已复制"); }));
+        b3.Controls.Add(FlatBtn("检查更新", (s2, e2) => CheckUpdate()));
         var b3b = new FlowLayoutPanel
         {
-            Left = (int)(22 * _s), Top = (int)(112 * _s), Height = (int)(46 * _s),
-            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Left = Pad, Top = (int)(112 * _s), Height = (int)(44 * _s),
+            Width = (int)(760 * _s), BackColor = Color.Transparent, WrapContents = false,
         };
         b3b.Controls.Add(FlatBtn("打开设置", (s2, e2) => ShowSettings()));
         b3b.Controls.Add(FlatBtn("打开日志", (s2, e2) => OpenFile(Log.FilePath)));
         b3b.Controls.Add(FlatBtn("打开数据目录", (s2, e2) => OpenFolder(Log.Dir)));
+        b3b.Controls.Add(FlatBtn("放行防火墙", (s2, e2) => AddFirewallRule()));
         c3.Controls.Add(b3);
         c3.Controls.Add(b3b);
-        inner.Controls.Add(Wrap(c3));
+        grid.Controls.Add(c3, 1, 5);
 
-
-
-        /* 客户端填写说明 */
-        var c4 = Card("客户端填写（OpenAI 兼容）", 248);
+        /* 客户端填写 */
+        var c4 = Card("客户端填写（OpenAI 兼容）", 232);
         c4.Controls.Add(new Label
         {
-            Left = (int)(22 * _s), Top = (int)(58 * _s), Width = (int)(960 * _s), Height = (int)(108 * _s),
+            Left = Pad, Top = (int)(58 * _s), Width = (int)(860 * _s), Height = (int)(104 * _s),
             ForeColor = CText, Font = F(12f), BackColor = Color.Transparent,
             Text = "Base URL : http://127.0.0.1:8787/v1      # 局域网设备换成上面的局域网地址\r\n" +
                    "API Key  : " + Prefs.ApiKey + "\r\n" +
@@ -539,14 +591,14 @@ public sealed class MainForm : Form
         });
         c4.Controls.Add(new Label
         {
-            Left = (int)(22 * _s), Top = (int)(172 * _s), Width = (int)(960 * _s), Height = (int)(56 * _s),
+            Left = Pad, Top = (int)(166 * _s), Width = (int)(860 * _s), Height = (int)(54 * _s),
             ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
-            Text = "局域网访问需放行防火墙（点上面的按钮或手动执行 netsh）；\r\n" +
-                   "调用前请在「对话页」登录官网，未登录时接口返回 503。",
+            Text = "局域网访问需放行防火墙（点上面的按钮或手动执行 netsh）；调用前请先在「对话页」登录官网，未登录时接口返回 503。\r\n" +
+                   "升级方式：下载新版 exe，关闭本程序后直接覆盖旧文件即可（数据与登录态在 %LOCALAPPDATA%\\DeepSeekWebAPI，不受影响）。",
         });
-        inner.Controls.Add(Wrap(c4));
+        grid.Controls.Add(c4, 0, 6);
+        grid.SetColumnSpan(c4, 2);
 
-        inner.Controls.Add(new Panel { Height = (int)(16 * _s), BackColor = CBg });
         return host;
     }
 
@@ -576,13 +628,13 @@ public sealed class MainForm : Form
         };
         tile.Controls.Add(new Label
         {
-            Text = title, Left = (int)(24 * _s), Top = (int)(20 * _s), AutoSize = true,
-            ForeColor = CSub, Font = F(11.5f), BackColor = Color.Transparent,
+            Text = title, Left = Pad, Top = (int)(18 * _s), AutoSize = true,
+            ForeColor = CSub, Font = F(FS_Body), BackColor = Color.Transparent,
         });
         var v = new Label
         {
-            Text = "—", Left = (int)(24 * _s), Top = (int)(54 * _s), AutoSize = true,
-            ForeColor = accent, Font = F(18f, FontStyle.Bold), BackColor = Color.Transparent,
+            Text = "—", Left = Pad, Top = (int)(50 * _s), AutoSize = true,
+            ForeColor = accent, Font = F(19f, FontStyle.Bold), BackColor = Color.Transparent,
         };
         tile.Controls.Add(v);
         parent.Controls.Add(tile, col, 0);
@@ -593,16 +645,16 @@ public sealed class MainForm : Form
     {
         card.Controls.Add(new Label
         {
-            Text = name, Left = (int)(22 * _s), Top = y + (int)(4 * _s), AutoSize = true,
-            ForeColor = CSub, Font = F(11.5f), BackColor = Color.Transparent,
+            Text = name, Left = Pad, Top = y + (int)(5 * _s), AutoSize = true,
+            ForeColor = CSub, Font = F(FS_Body), BackColor = Color.Transparent,
         });
         var v = new Label
         {
-            Text = "—", Left = (int)(290 * _s), Top = y, AutoSize = true,
-            ForeColor = CText, Font = F(12.5f), BackColor = Color.Transparent,
+            Text = "—", Left = (int)(230 * _s), Top = y, AutoSize = true, MaximumSize = new Size((int)(1200 * _s), 0),
+            ForeColor = CText, Font = F(FS_Value), BackColor = Color.Transparent,
         };
         card.Controls.Add(v);
-        y += (int)(32 * _s);
+        y += RowH;
         return v;
     }
 
@@ -613,7 +665,7 @@ public sealed class MainForm : Form
         var host = new Panel { Dock = DockStyle.Fill, BackColor = CBg, AutoScroll = false };
         var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CBg };
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 58 * _s));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 52 * _s));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 50 * _s));
         grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         host.Controls.Add(grid);
 
@@ -626,14 +678,13 @@ public sealed class MainForm : Form
         bar.Controls.Add(FlatBtn("重新注入脚本", (s, e) => { WebBridge.I.InjectBridge(); WebBridge.I.Probe(); Toast("已重新注入 bridge.js"); }));
         bar.Controls.Add(FlatBtn("新建对话", (s, e) => NewChat()));
         bar.Controls.Add(FlatBtn("外部浏览器打开", (s, e) => OpenUrl(DsUrl)));
-        bar.Controls.Add(new Label { Text = "缩放", AutoSize = true, ForeColor = CSub, Font = F(10.5f), Margin = new Padding((int)(14 * _s), (int)(10 * _s), (int)(6 * _s), 0), BackColor = Color.Transparent });
+        bar.Controls.Add(new Label { Text = "网页缩放", AutoSize = true, ForeColor = CSub, Font = F(10.5f), Margin = new Padding((int)(14 * _s), (int)(12 * _s), (int)(6 * _s), 0), BackColor = Color.Transparent });
         bar.Controls.Add(FlatBtn("−", (s, e) => Zoom(-0.1)));
-        _zoomText = new Label { Text = "100%", AutoSize = true, ForeColor = CText, Font = F(10.5f), Margin = new Padding((int)(4 * _s), (int)(10 * _s), (int)(4 * _s), 0), BackColor = Color.Transparent };
+        _zoomText = new Label { Text = "100%", AutoSize = true, ForeColor = CText, Font = F(FS_Value), Margin = new Padding((int)(4 * _s), (int)(12 * _s), (int)(4 * _s), 0), BackColor = Color.Transparent };
         bar.Controls.Add(_zoomText);
         bar.Controls.Add(FlatBtn("+", (s, e) => Zoom(0.1)));
         grid.Controls.Add(bar, 0, 0);
 
-        /* 账号切换条：每个账号一个 chip，末尾 ＋ 新建 */
         _acctChips = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
@@ -647,7 +698,7 @@ public sealed class MainForm : Form
         _webHint = new Label
         {
             Dock = DockStyle.Fill, ForeColor = CSub, TextAlign = ContentAlignment.MiddleCenter,
-            Font = F(11f), Text = WebHintText + "\r\n\r\n正在初始化 WebView2…", BackColor = CCard,
+            Font = F(FS_Body), Text = WebHintText + "\r\n\r\n正在初始化 WebView2…", BackColor = CCard,
         };
         _webHost.Controls.Add(_webHint);
 
@@ -925,8 +976,10 @@ public sealed class MainForm : Form
             if (_vLan != null) _vLan.Text = string.IsNullOrEmpty(eng.LanUrl) ? "—" : eng.LanUrl;
             if (_vKey != null) _vKey.Text = Prefs.ApiKey;
             if (_sideState != null)
-                _sideState.Text = "服务：" + eng.State + "\r\n端口：" + (eng.Port > 0 ? eng.Port : Prefs.Port)
-                    + " · 局域网：" + (Prefs.LanEnabled ? "开" : "关");
+                _sideState.Text = "服务：" + (eng.ServiceRunning ? "运行中" : "已停止")
+                    + " · 端口 " + (eng.Port > 0 ? eng.Port : Prefs.Port) + "\r\n"
+                    + "局域网：" + (Prefs.LanEnabled ? "已开启" : "已关闭")
+                    + " · 轮换：" + (Prefs.RotateEnabled ? "第 " + AccountPool.I.CycleNo + " 轮" : "关");
             if (_tray != null && _tray.Visible)
             {
                 _tray.Text = Program.AppName + " · " + (eng.LanUrl.Length > 0 ? eng.LanUrl : ("127.0.0.1:" + eng.Port));
@@ -1180,7 +1233,7 @@ public sealed class MainForm : Form
         if (s.InCooldown) return "冷却 " + AccountSlot.FmtLeft(s.CooldownLeftSec);
         if (!s.PageReady) return "加载中";
         if (!s.LoggedIn) return "未登录";
-        return "就绪 " + s.SentInSession + "/" + Prefs.SessionSendLimit;
+        return s.SentInSession + "/" + Prefs.SessionSendLimit;
     }
 
     /// <summary>刷新侧栏账号列表 / 对话页 chip / 控制台状态（每秒调用，尽量只改文本不重建控件）。</summary>
@@ -1202,10 +1255,10 @@ public sealed class MainForm : Form
                 {
                     var b = new Button
                     {
-                        Text = "● " + sl.Name, Width = Math.Max((int)(180 * _s), (_acctFlow?.ClientSize.Width ?? (int)(240 * _s)) - (int)(10 * _s)),
-                        Height = (int)(48 * _s), FlatStyle = FlatStyle.Flat, BackColor = CSide, ForeColor = CText,
-                        Font = F(10.5f), TextAlign = ContentAlignment.MiddleLeft, Cursor = Cursors.Hand,
-                        Margin = new Padding(0, (int)(2 * _s), 0, (int)(2 * _s)),
+                        Text = "● " + sl.Name, Width = Math.Max((int)(180 * _s), (_acctFlow?.ClientSize.Width ?? (int)(240 * _s)) - (int)(8 * _s)),
+                        Height = (int)(54 * _s), FlatStyle = FlatStyle.Flat, BackColor = CSide, ForeColor = CText,
+                        Font = F(FS_Body), TextAlign = ContentAlignment.MiddleLeft, Cursor = Cursors.Hand,
+                        Margin = new Padding(0, 0, 0, (int)(4 * _s)),
                         Padding = new Padding((int)(10 * _s), 0, 0, 0), UseVisualStyleBackColor = false,
                     };
                     b.FlatAppearance.BorderSize = 0;
@@ -1222,10 +1275,10 @@ public sealed class MainForm : Form
                     var chip = new Button
                     {
                         Text = "● " + sl.Name, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                        Height = (int)(38 * _s), FlatStyle = FlatStyle.Flat, BackColor = CCard, ForeColor = CText,
-                        Font = F(10.5f), Cursor = Cursors.Hand,
+                        Height = (int)(40 * _s), FlatStyle = FlatStyle.Flat, BackColor = CCard, ForeColor = CText,
+                        Font = F(FS_Body), Cursor = Cursors.Hand,
                         Margin = new Padding(0, 0, (int)(8 * _s), 0),
-                        Padding = new Padding((int)(12 * _s), 0, (int)(12 * _s), 0), UseVisualStyleBackColor = false,
+                        Padding = new Padding((int)(14 * _s), 0, (int)(14 * _s), 0), UseVisualStyleBackColor = false,
                     };
                     chip.FlatAppearance.BorderColor = CLine;
                     chip.FlatAppearance.MouseOverBackColor = CAccentDim;
@@ -1234,18 +1287,19 @@ public sealed class MainForm : Form
                     _acctChips?.Controls.Add(chip);
                     _chipBtns[sl.Id] = chip;
                 }
-                var addChip = FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive());
-                addChip.Height = (int)(38 * _s);
+                var addChip = FlatBtn("＋ 添加账号", (s2, e2) => AddAccountInteractive());
+                addChip.Height = (int)(40 * _s);
+                addChip.MinimumSize = Size.Empty;
                 _acctChips?.Controls.Add(addChip);
+                BuildAcctTable(slots);
             }
 
             foreach (var sl in slots)
             {
                 string dot = !sl.Enabled ? "○" : sl.InCooldown ? "⏳" : (!sl.PageReady ? "◌" : (sl.LoggedIn ? "●" : "○"));
-                string line = dot + " " + sl.Name + "\r\n" + sl.StateText;
                 if (_acctBtns.TryGetValue(sl.Id, out var b))
                 {
-                    b.Text = line;
+                    b.Text = dot + "  " + sl.Name + "\r\n     " + sl.StateText;
                     b.ForeColor = sl.Id == _currentAccountId ? CAccent : CText;
                     b.BackColor = sl.Id == _currentAccountId ? CAccentDim : CSide;
                 }
@@ -1256,10 +1310,173 @@ public sealed class MainForm : Form
                     c.BackColor = sl.Id == _currentAccountId ? CAccentDim : CCard;
                 }
             }
+            UpdateAcctTable(slots);
+
             if (_vRotate != null)
-                _vRotate.Text = (Prefs.RotateEnabled ? "已开启" : "已关闭") + " · " + AccountPool.I.SummaryText();
+                _vRotate.Text = (Prefs.RotateEnabled ? "已开启" : "已关闭") + " · " + AccountPool.I.SummaryText()
+                    + (Prefs.RotateEnabled ? " · 下一棒 " + AccountPool.I.NextName() : "");
+            if (_acctHead != null)
+                _acctHead.Text = Prefs.RotateEnabled ? ("第 " + AccountPool.I.CycleNo + " 轮") : "未开启";
         }
         catch { }
+    }
+
+    /* ---------- 控制台「账号调用情况」表 ---------- */
+    private void BuildAcctTable(List<AccountSlot> slots)
+    {
+        if (_acctTable == null) return;
+        var olds = new List<Control>();
+        foreach (Control c in _acctTable.Controls) olds.Add(c);
+        foreach (var c in olds) { try { c.Dispose(); } catch { } }
+        _acctTable.Controls.Clear();
+        _acctTable.RowStyles.Clear();
+        _tblRows.Clear();
+
+        string[] heads = { "#", "账号", "状态", "本轮已发", "累计调用", "最近使用" };
+        _acctTable.RowCount = slots.Count + 1;
+        for (int i = 0; i < 6; i++)
+            _acctTable.Controls.Add(new Label
+            {
+                Text = heads[i], Dock = DockStyle.Fill, ForeColor = CSub, Font = F(10.5f),
+                TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, Margin = new Padding(0, 0, (int)(6 * _s), 0),
+            }, i, 0);
+        _acctTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 32 * _s));
+
+        for (int r = 0; r < slots.Count; r++)
+        {
+            var set = new Label[6];
+            for (int c = 0; c < 6; c++)
+            {
+                var lb = new Label
+                {
+                    Text = "—", Dock = DockStyle.Fill, ForeColor = c == 1 ? CText : CSub,
+                    Font = F(c == 1 ? FS_Value : FS_Body), TextAlign = ContentAlignment.MiddleLeft,
+                    BackColor = Color.Transparent, Margin = new Padding(0, 0, (int)(6 * _s), 0),
+                };
+                _acctTable.Controls.Add(lb, c, r + 1);
+                set[c] = lb;
+            }
+            _tblRows[slots[r].Id] = set;
+            _acctTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 34 * _s));
+        }
+    }
+
+    private void UpdateAcctTable(List<AccountSlot> slots)
+    {
+        for (int i = 0; i < slots.Count; i++)
+        {
+            var s = slots[i];
+            if (!_tblRows.TryGetValue(s.Id, out var set)) continue;
+            bool active = s.Id == _currentAccountId;
+            set[0].Text = (i + 1).ToString();
+            set[1].Text = s.Name + (s.IsPrimary ? "（主）" : "");
+            set[1].ForeColor = active ? CAccent : CText;
+            string st; Color sc;
+            if (!s.Enabled) { st = "已停用"; sc = CSub; }
+            else if (s.InCooldown) { st = "冷却 " + AccountSlot.FmtLeft(s.CooldownLeftSec); sc = CBad; }
+            else if (!s.PageReady) { st = "加载中…"; sc = CSub; }
+            else if (!s.LoggedIn) { st = "未登录"; sc = CWarn; }
+            else { st = s.NeedNewChat ? "就绪 · 待新开对话" : "就绪"; sc = COk; }
+            set[2].Text = st; set[2].ForeColor = sc;
+            set[3].Text = s.SentInSession + " / " + Prefs.SessionSendLimit;
+            set[4].Text = s.TotalCalls + " 次（成功 " + s.OkCalls + (s.RateLimitedCount > 0 ? "，限流 " + s.RateLimitedCount : "") + "）";
+            set[5].Text = s.LastUsedMs > 0 ? Ago(s.LastUsedMs) : "—";
+        }
+    }
+
+    private static string Ago(long ms)
+    {
+        double sec = (AccountSlot.NowMs - ms) / 1000.0;
+        if (sec < 60) return "刚刚";
+        if (sec < 3600) return (int)(sec / 60) + " 分钟前";
+        if (sec < 86400) return (int)(sec / 3600) + " 小时前";
+        return (int)(sec / 86400) + " 天前";
+    }
+
+    /* ---------- 深色标题栏（去掉顶部白边） ---------- */
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyDarkChrome();
+    }
+
+    private void ApplyDarkChrome()
+    {
+        try
+        {
+            int on = 1;
+            DwmSetWindowAttribute(Handle, 20, ref on, sizeof(int));   // DWMWA_USE_IMMERSIVE_DARK_MODE
+            DwmSetWindowAttribute(Handle, 19, ref on, sizeof(int));   // 旧版编号
+            int caption = ColorTranslator.ToWin32(CBg);
+            DwmSetWindowAttribute(Handle, 35, ref caption, sizeof(int)); // DWMWA_CAPTION_COLOR
+            int txt = ColorTranslator.ToWin32(CText);
+            DwmSetWindowAttribute(Handle, 36, ref txt, sizeof(int));     // DWMWA_TEXT_COLOR
+            int border = ColorTranslator.ToWin32(CBg);
+            DwmSetWindowAttribute(Handle, 34, ref border, sizeof(int));  // DWMWA_BORDER_COLOR
+            int round = 2;
+            DwmSetWindowAttribute(Handle, 33, ref round, sizeof(int));   // 圆角
+        }
+        catch { }
+    }
+
+    /* ---------- 连发次数 / 检查更新 ---------- */
+    private void EditSendLimit()
+    {
+        try
+        {
+            string v = InputBox.Show(this, "每个对话最多连发几次（1-50）", Prefs.SessionSendLimit.ToString());
+            if (v == null) return;
+            if (!int.TryParse(v.Trim(), out int n) || n < 1 || n > 50) { Toast("请输入 1-50 之间的整数"); return; }
+            Prefs.SessionSendLimit = n;
+            Toast("已设置：每个账号的每个对话连发 " + n + " 次后换下一个账号");
+            RefreshAccounts(); RefreshStats();
+        }
+        catch (Exception e) { Log.Write("设置连发次数失败: " + e.Message); }
+    }
+
+    private async void CheckUpdate()
+    {
+        Toast("正在检查更新…");
+        try
+        {
+            using var http = new System.Net.Http.HttpClient();
+            http.Timeout = TimeSpan.FromSeconds(15);
+            http.DefaultRequestHeaders.Add("User-Agent", "DeepSeekWebAPI-Windows");
+            string json = await http.GetStringAsync("https://api.github.com/repos/Hiweny/deepseek-web-api/releases/latest");
+            var o = Json.TryParse(json) as JObj;
+            string tag = o == null ? "" : o.Str("tag_name", "");
+            string url = o == null ? "" : o.Str("html_url", "");
+            if (string.IsNullOrEmpty(tag)) { Toast("检查更新失败：未取到版本信息"); return; }
+            var m = System.Text.RegularExpressions.Regex.Match(tag, @"(\d+)\.(\d+)\.(\d+)");
+            string latest = m.Success ? m.Value : tag;
+            if (CmpVer(latest, Program.Version) <= 0)
+            {
+                Toast("已是最新版（v" + Program.Version + "）");
+                return;
+            }
+            var r = MessageBox.Show(this,
+                "发现新版本：" + tag + "\n当前版本：v" + Program.Version + "\n\n是否打开下载页面？\n\n升级方式：下载新版 exe，关闭本程序后直接覆盖旧文件即可（登录态与设置在 %LOCALAPPDATA%\\DeepSeekWebAPI，不受影响）。",
+                Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (r == DialogResult.Yes)
+                OpenUrl(string.IsNullOrEmpty(url) ? "https://github.com/Hiweny/deepseek-web-api/releases/latest" : url);
+        }
+        catch (Exception e) { Toast("检查更新失败：" + e.Message); }
+    }
+
+    private static int CmpVer(string a, string b)
+    {
+        var x = (a ?? "").Split('.');
+        var y = (b ?? "").Split('.');
+        for (int i = 0; i < 3; i++)
+        {
+            int.TryParse(i < x.Length ? x[i] : "0", out int vi);
+            int.TryParse(i < y.Length ? y[i] : "0", out int vj);
+            if (vi != vj) return vi < vj ? -1 : 1;
+        }
+        return 0;
     }
 
     /// <summary>把 bridge 状态转发给引擎（UI 线程）。</summary>

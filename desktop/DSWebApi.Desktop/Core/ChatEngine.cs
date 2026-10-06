@@ -260,8 +260,14 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
             else if (type == "newChat")
             {
                 slot.SentInSession = 0;
+                slot.NeedNewChat = false;
                 string sid2 = o.Str("sessionId", "");
-                if (sid2.Length > 0) slot.SessionId = sid2;
+                if (sid2.Length > 0) { slot.SessionId = sid2; slot.TrackedSessionId = sid2; }
+            }
+            else if (type == "contextLimit")
+            {
+                if (slot != null) slot.NeedNewChat = true;
+                Log.Write("账号 " + (slot != null ? slot.Name : "?") + " 页面提示上下文超限：" + o.Str("message", ""));
             }
             else if (type == "rateLimited")
             {
@@ -270,6 +276,26 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         }
         catch { }
         Notify();
+    }
+
+    /// <summary>错误里带「上下文超限」标记。</summary>
+    public static bool LookContextLimit(string err)
+    {
+        if (string.IsNullOrEmpty(err)) return false;
+        if (err.IndexOf("CONTEXT_LIMIT", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return (err.Contains("上下文") && (err.Contains("上限") || err.Contains("超出") || err.Contains("过长") || err.Contains("达到")))
+            || err.Contains("长度上限") || err.Contains("达到最大长度");
+    }
+
+    /// <summary>官网把「上下文超限，请开启新对话」当成一条普通回复返回时的识别（严格限长，避免误判正常回答）。</summary>
+    public static bool LookContextLimitText(string content, string thinking)
+    {
+        if (string.IsNullOrEmpty(content)) return false;
+        if (!string.IsNullOrEmpty(thinking)) return false;      // 有思考内容 = 正常回答
+        string c = content.Trim();
+        if (c.Length > 120) return false;
+        if (LookContextLimit(c)) return true;
+        return c.Contains("请开启新对话") || c.Contains("请新建对话") || c.Contains("开启新对话后");
     }
 
     /* ================= 会话上下文监控 ================= */
@@ -329,7 +355,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
     }
 
     /// <summary>每轮回复结束后累计会话上下文；达到阈值则自动新建对话。</summary>
-    private void AfterReply(JObj r, string promptText)
+    private void AfterReply(AccountSlot slot, JObj r, string promptText)
     {
         try
         {
@@ -341,22 +367,33 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
             bool rotate = false;
             lock (_ctxLock)
             {
-                if (sid.Length > 0 && sid != _trackedSessionId) { _trackedSessionId = sid; _sessionTokens = 0; }
-                _sessionTokens += promptTok + replyTok;
-                used = _sessionTokens;
+                if (slot != null)
+                {
+                    if (sid.Length > 0 && sid != slot.TrackedSessionId) { slot.TrackedSessionId = sid; slot.SessionTokens = 0; }
+                    slot.SessionTokens += promptTok + replyTok;
+                    used = slot.SessionTokens;
+                }
+                else
+                {
+                    if (sid.Length > 0 && sid != _trackedSessionId) { _trackedSessionId = sid; _sessionTokens = 0; }
+                    _sessionTokens += promptTok + replyTok;
+                    used = _sessionTokens;
+                }
                 limit = ContextLimitTokens();
                 pct = NewChatThresholdPct();
                 long threshold = limit * pct / 100;
-                if (Prefs.AutoNewChat && threshold > 0 && used >= threshold && Volatile.Read(ref _inflight) <= 1)
+                if (Prefs.AutoNewChat && threshold > 0 && used >= threshold)
                 {
                     rotate = true;
-                    _sessionTokens = 0;
-                    _trackedSessionId = "";
+                    if (slot != null) { slot.SessionTokens = 0; slot.TrackedSessionId = ""; slot.NeedNewChat = true; }
+                    else { _sessionTokens = 0; _trackedSessionId = ""; }
                 }
-                _contextInfo = FmtTokens(used) + " / " + FmtTokens(limit) + "（" + (limit > 0 ? used * 100 / limit : 0) + "%）";
+                _contextInfo = (slot != null ? slot.Name + " " : "") + FmtTokens(used) + " / " + FmtTokens(limit)
+                    + "（" + (limit > 0 ? used * 100 / limit : 0) + "%）";
             }
-            Log.Write("会话上下文 ≈ " + used + " tokens / " + limit + "（阈值 " + pct + "%）" + (rotate ? " → 自动新建对话" : ""));
-            if (rotate) RotateSession();
+            Log.Write("会话上下文 ≈ " + used + " tokens / " + limit + "（阈值 " + pct + "%）"
+                + (rotate ? " → 达阈值，下次该账号将新开对话" : ""));
+            if (rotate && slot == null) RotateSession();
             Notify();
         }
         catch (Exception) { }
@@ -510,11 +547,21 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
             try
             {
                 _sendErr = null; _sendSessionId = ""; _sendOk = false;
-                if (slot != null && needNewChat)
+                if (slot != null)
                 {
-                    Log.Write("账号 " + slot.Name + " 本轮已发满 " + Math.Max(1, Prefs.SessionSendLimit) + " 次 → 新开对话");
-                    var nc = slot.Bridge.NewChat();
-                    AccountPool.I.ResetSession(slot, nc.Str("sessionId"));
+                    long ctxLimit = ContextLimitTokens() * NewChatThresholdPct() / 100;
+                    if (!needNewChat && Prefs.AutoNewChat && ctxLimit > 0 && slot.SessionTokens >= ctxLimit)
+                    {
+                        needNewChat = true;
+                        Log.Write("账号 " + slot.Name + " 对话上下文已到阈值（≈" + slot.SessionTokens + " token）→ 先新开对话");
+                    }
+                    if (needNewChat)
+                    {
+                        Log.Write("账号 " + slot.Name + " 新开对话（轮次切换 / 上下文已满）");
+                        var nc = slot.Bridge.NewChat();
+                        AccountPool.I.MarkChatOpened(slot, nc.Str("sessionId"));
+                        System.Threading.Thread.Sleep(400);
+                    }
                 }
                 // 附件：逐个注入官网，等待上传/解析
                 foreach (var a in pb.attachments)
@@ -522,8 +569,8 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                     var r = wb.AttachFile(a.Name, a.Mime, a.Base64, 150);
                     if (!r.Bool("ok")) Log.Write("附件挂载失败: " + a.Name + " " + r.Str("error"));
                 }
-                if (stream) RunStream(model, pb, res, toolNames, wb);
-                else RunBlocking(model, pb, res, toolNames, wb);
+                if (stream) RunStream(model, pb, res, toolNames, wb, slot);
+                else RunBlocking(model, pb, res, toolNames, wb, slot);
                 if (slot != null)
                 {
                     AccountPool.I.OnSent(slot, _sendOk, _sendOk ? null : _sendErr, _sendSessionId);
@@ -549,13 +596,29 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         });
     }
 
-    private void RunBlocking(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb)
+    private void RunBlocking(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb, AccountSlot slot)
     {
         int timeout = Prefs.TimeoutSec;
         var r = wb.SendPrompt(pb.text, null, timeout);
         _sendSessionId = r.Str("sessionId", "");
         string thinking = r.Str("thinking");
         string content = r.Str("content");
+        string err0 = r.Str("error", "");
+
+        // 上下文超限（官网 toast，或官网把超限提示当成一条正文返回）→ 自动新开对话并重试一次。
+        // 此时还没写任何响应，重试是安全的。
+        if (slot != null && (LookContextLimit(err0) || LookContextLimitText(content, thinking)))
+        {
+            Log.Write("账号 " + slot.Name + " 命中上下文上限 → 自动新开对话并重试（" + (err0.Length > 0 ? err0 : content) + "）");
+            var nc = slot.Bridge.NewChat();
+            AccountPool.I.MarkChatOpened(slot, nc.Str("sessionId"));
+            System.Threading.Thread.Sleep(500);
+            r = wb.SendPrompt(pb.text, null, timeout);
+            _sendSessionId = r.Str("sessionId", "");
+            thinking = r.Str("thinking");
+            content = r.Str("content");
+        }
+
         if (content.Length == 0 && thinking.Length == 0)
         {
             string err = r.Str("error", "EMPTY");
@@ -572,15 +635,15 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         _sendOk = true; _sendErr = null;
         res.SendJson(outObj.ToJson());
         _lastCallInfo = "成功 · " + (cr.toolCalls != null ? "工具调用" : cr.content.Length + "字")
-            + (r.Bool("recalled") ? " · 防撤回" : "");
-        AfterReply(r, pb.text);
+            + (r.Bool("recalled") ? " · 防撤回" : "") + (slot != null ? " · " + slot.Name : "");
+        AfterReply(slot, r, pb.text);
     }
 
     /* ================= 流式 ================= */
 
     private const int HOLD = 32;
 
-    private void RunStream(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb)
+    private void RunStream(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb, AccountSlot slot)
     {
         int timeout = Prefs.TimeoutSec;
         string id = OpenAiAdapter.NewId();
@@ -705,7 +768,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                             _lastCallInfo = "成功 · " + content.Length + "字" + (r.Bool("recalled") ? " · 防撤回" : "");
                         }
                         _sendOk = true; _sendErr = null; _sendSessionId = r.Str("sessionId", "");
-                        AfterReply(r, pb.text);
+                        AfterReply(slot, r, pb.text);
                         FinishSse(res, gate);
                     }
                     catch (Exception e)

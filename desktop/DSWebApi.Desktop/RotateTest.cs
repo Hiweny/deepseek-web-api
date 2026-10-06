@@ -159,19 +159,25 @@ internal static class RotateTest
             P("登录完成，可用账号 = " + usable + " / " + _slots.Count + "，" + AccountPool.I.SummaryText());
             if (usable < 2) { P("FAIL 可用账号不足 2 个，无法验证轮换"); return 4; }
 
-            /* 4) 打开轮换，连发请求 */
+            /* 4) 打开轮换，严格顺序连发：验证「账号1×N → 账号2×N → … → 一圈后全员新开对话」 */
             Prefs.RotateEnabled = true;
-            P("轮换已开启（会话上限 " + Prefs.SessionSendLimit + " 次/账号，冷却 " + Prefs.CooldownMinutes + " 分钟）");
+            int limit = Math.Max(1, Prefs.SessionSendLimit);
+            var names = AccountPool.I.Snapshot().Where(x => x.LoggedIn && x.Enabled).Select(x => x.Name).ToList();
+            int nAcc = names.Count;
+            P("轮换已开启：顺序 = " + string.Join(" → ", names) + " · 每账号每对话连发 " + limit + " 次 · 冷却 " + Prefs.CooldownMinutes + " 分钟");
 
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(240) };
             string url = "http://127.0.0.1:" + port + "/v1/chat/completions";
-            int okCount = 0, rateLimited = 0, otherFail = 0;
+            int okCount = 0, rateLimited = 0, otherFail = 0, orderBad = 0, cycleBad = 0;
+            int lastCycle = AccountPool.I.CycleNo;
+            const string body = "{\"model\":\"deepseek\",\"messages\":[{\"role\":\"user\",\"content\":\"只回复两个字：好的\"}],\"stream\":false}";
+
             for (int r = 1; r <= _rounds; r++)
             {
-                var before = AccountPool.I.Snapshot().ToDictionary(s => s.Id, s => s.TotalCalls);
-                string body = "{\"model\":\"deepseek\",\"messages\":[{\"role\":\"user\",\"content\":\"只回复两个字：好的\"}],\"stream\":false}";
-                string resp = "";
-                int status = 0;
+                string expect = names[((r - 1) / limit) % nAcc];
+                int expectCycle = 1 + (r - 1) / (limit * nAcc);
+                var before = AccountPool.I.Snapshot().ToDictionary(x => x.Id, x => x.TotalCalls);
+                string resp = ""; int status = 0;
                 try
                 {
                     var req = new HttpRequestMessage(HttpMethod.Post, url);
@@ -183,36 +189,85 @@ internal static class RotateTest
                 }
                 catch (Exception ex) { P("第 " + r + " 次请求异常: " + ex.Message); otherFail++; }
 
-                // 判断哪个账号承接了本次
                 string who = "?";
-                foreach (var s in AccountPool.I.Snapshot())
+                foreach (var x in AccountPool.I.Snapshot())
                 {
-                    before.TryGetValue(s.Id, out var pre);
-                    if (s.TotalCalls > pre) who = s.Name;
+                    before.TryGetValue(x.Id, out var pre);
+                    if (x.TotalCalls > pre) who = x.Name;
                 }
                 bool okOne = status == 200 && resp.Contains("\"content\"");
                 if (okOne) okCount++;
                 else if (status == 429 || resp.Contains("rate_limit")) rateLimited++;
                 else otherFail++;
 
-                P("第 " + r + " 次 → 账号[" + who + "] HTTP " + status + " · "
-                  + Trunc(resp.Replace("\n", " "), 180));
-                P("    池状态: " + string.Join(" | ", AccountPool.I.Snapshot().Select(s =>
-                      s.Name + "=" + s.StateText + "(总" + s.TotalCalls + ")")));
-                await Task.Delay(800);
+                bool orderOk = who == expect;
+                if (!orderOk) orderBad++;
+                int cyc = AccountPool.I.CycleNo;
+                bool cycleOk = cyc == expectCycle;
+                if (!cycleOk) cycleBad++;
+                if (cyc > lastCycle) { P("  ↳ 所有账号都轮过一遍 → 进入第 " + cyc + " 轮（各账号应新开对话）"); lastCycle = cyc; }
+
+                P("第 " + r + " 次 → 账号[" + who + "]（期望 " + expect + (orderOk ? " ✓" : " ✗") + "） 第 " + cyc + " 轮 HTTP " + status
+                  + " · " + Trunc(resp.Replace("\n", " "), 120));
+                P("    池状态: " + string.Join(" | ", AccountPool.I.Snapshot().Select(x =>
+                      x.Name + "=" + x.StateText + "(总" + x.TotalCalls + ")")));
+                await Task.Delay(700);
             }
 
-            /* 5) 结论 */
+            /* 5) 并发测试：同时发 nAcc 个请求，应分散到 nAcc 个不同账号 */
+            P("---- 并发测试（同时发 " + nAcc + " 个请求）----");
+            var pre2 = AccountPool.I.Snapshot().ToDictionary(x => x.Id, x => x.TotalCalls);
+            int conOk = 0, con429 = 0, conFail = 0;
+            var tasks = new List<Task>();
+            for (int i = 0; i < nAcc; i++)
+            {
+                tasks.Add(Task.Run(async () =>
+                {
+                    try
+                    {
+                        var req = new HttpRequestMessage(HttpMethod.Post, url);
+                        req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Prefs.ApiKey);
+                        req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                        var rr = await http.SendAsync(req);
+                        string rp = await rr.Content.ReadAsStringAsync();
+                        int st = (int)rr.StatusCode;
+                        if (st == 200 && rp.Contains("\"content\"")) Interlocked.Increment(ref conOk);
+                        else if (st == 429) Interlocked.Increment(ref con429);
+                        else Interlocked.Increment(ref conFail);
+                    }
+                    catch { Interlocked.Increment(ref conFail); }
+                }));
+            }
+            await Task.WhenAll(tasks);
+
+            var hit = new Dictionary<string, int>();
+            foreach (var x in AccountPool.I.Snapshot())
+            {
+                pre2.TryGetValue(x.Id, out var pre);
+                int d = x.TotalCalls - pre;
+                if (d > 0) hit[x.Name] = d;
+            }
+            bool conSpread = hit.Count >= Math.Min(nAcc, AccountPool.I.Available().Count);
+            bool conLimitOk = hit.Values.All(v => v <= limit);
+            P("并发落点: " + (hit.Count == 0 ? "无" : string.Join("、", hit.Select(kv => kv.Key + "×" + kv.Value)))
+              + " · 成功 " + conOk + " / 429 " + con429 + " / 失败 " + conFail);
+            P("并发分散到不同账号=" + conSpread + " · 单账号并发计数未越界=" + conLimitOk);
+
+            /* 6) 结论 */
             P("---- 轮换结果 ----");
-            foreach (var s in AccountPool.I.Snapshot())
-                P(s.Name + " 承接 " + s.TotalCalls + " 次（成功 " + s.OkCalls + "，限流 " + s.RateLimitedCount + "，本轮会话已发 "
-                  + s.SentInSession + "/" + Prefs.SessionSendLimit + "）状态=" + s.StateText);
-            var served = AccountPool.I.Snapshot().Count(s => s.TotalCalls > 0);
+            foreach (var x in AccountPool.I.Snapshot())
+                P(x.Name + " 承接 " + x.TotalCalls + " 次（成功 " + x.OkCalls + "，限流 " + x.RateLimitedCount
+                  + "，当前对话已发 " + x.SentInSession + "/" + limit + "）状态=" + x.StateText);
+            var served = AccountPool.I.Snapshot().Count(x => x.TotalCalls > 0);
             P("成功 " + okCount + " / 限流 " + rateLimited + " / 其他失败 " + otherFail + " · 参与账号 " + served + " 个");
             bool rotated = served >= Math.Min(2, usable);
-            bool limitOk = AccountPool.I.Snapshot().All(s => s.TotalCalls == 0 || s.SentInSession <= Prefs.SessionSendLimit);
-            P("轮换生效=" + rotated + " · 会话上限未越界=" + limitOk);
-            if (okCount > 0 && rotated) { P("ROTATE_OK"); return 0; }
+            bool limitOk = AccountPool.I.Snapshot().All(x => x.TotalCalls == 0 || x.SentInSession <= limit);
+            bool orderOkAll = orderBad == 0 || rateLimited > 0;
+            bool cycleOkAll = cycleBad == 0 || rateLimited > 0;
+            P("轮换生效=" + rotated + " · 顺序正确=" + orderOkAll + "（错 " + orderBad + " 次）· 轮次推进正确=" + cycleOkAll
+              + "（错 " + cycleBad + " 次）· 会话上限未越界=" + limitOk);
+            P(conSpread ? "CONCUR_OK" : "CONCUR_FAIL");
+            if (okCount > 0 && rotated && limitOk && orderOkAll && cycleOkAll && conSpread) { P("ROTATE_OK"); return 0; }
             P("ROTATE_FAIL");
             return 5;
         }

@@ -73,6 +73,24 @@
     return '';
   }
 
+  /* 检测「对话/上下文达到长度上限，请开启新对话」一类提示（与限流区分开）
+     注意：只用 toast/alert 类容器，避免把聊天正文里的普通词误判 */
+  var CTX_RE = /((对话|上下文|本条|当前)[^，。,.]{0,10}(长度|上限|已满|过长|超出|达到|超过))|((达到|超过|超出)[^，。,.]{0,6}(最大长度|长度上限|上限))|(请[^，。,.]{0,8}(开启|新建|创建)[^，。,.]{0,4}(新)?对话)|(maximum context length)|(context length exceeded)|(start a new chat)|(too long)/i;
+  function detectContextLimitText() {
+    try {
+      var sel = '.ds-toast__content, .ds-toast, [role="alert"], [class*="toast"], [class*="alert"], [class*="notify"]';
+      var nodes = document.querySelectorAll(sel);
+      for (var i = 0; i < nodes.length && i < 40; i++) {
+        var el = nodes[i];
+        var st = window.getComputedStyle ? getComputedStyle(el) : null;
+        if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
+        var t = (el.textContent || '').trim();
+        if (t && t.length <= 60 && CTX_RE.test(t)) return t.replace(/\s+/g, ' ');
+      }
+    } catch (e) {}
+    return '';
+  }
+
   /* ================= 防撤回：本地原始片段缓存 ================= */
   function rawKey(sid, mid) { return 'dswb_recall_' + (sid || '') + '_' + (mid || ''); }
   function saveRaw(sid, mid, frags) {
@@ -638,6 +656,20 @@
       var started = Date.now();
       rlWatchers[o.reqId] = setInterval(function () {
         var txt = detectRateLimitText();
+        var ctx = txt ? '' : detectContextLimitText();
+        if (ctx) {
+          try { clearInterval(rlWatchers[o.reqId]); } catch (e) {}
+          delete rlWatchers[o.reqId];
+          var ridc = (o.sessionId && domWait[o.sessionId]) || domWait.__next;
+          if (ridc === o.reqId) {
+            if (o.sessionId && domWait[o.sessionId] === ridc) delete domWait[o.sessionId];
+            else if (domWait.__next === ridc) delete domWait.__next;
+          }
+          emit({ type: 'contextLimit', reqId: o.reqId, via: 'dom', message: ctx, sessionId: o.sessionId || '' });
+          emit({ type: 'reply', reqId: o.reqId, ok: false, via: 'dom', content: '', thinking: '',
+                 error: 'CONTEXT_LIMIT: ' + ctx, sessionId: o.sessionId || '', recalled: false });
+          return;
+        }
         if (txt) {
           try { clearInterval(rlWatchers[o.reqId]); } catch (e) {}
           delete rlWatchers[o.reqId];
