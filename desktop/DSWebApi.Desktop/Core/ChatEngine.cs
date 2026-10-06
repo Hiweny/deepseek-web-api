@@ -544,6 +544,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
 
         _queue.Add(() =>
         {
+            bool slotDone = false;
             try
             {
                 _sendErr = null; _sendSessionId = ""; _sendOk = false;
@@ -573,6 +574,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                 else RunBlocking(model, pb, res, toolNames, wb, slot);
                 if (slot != null)
                 {
+                    slotDone = true;
                     AccountPool.I.OnSent(slot, _sendOk, _sendOk ? null : _sendErr, _sendSessionId);
                     if (!_sendOk) Log.Write("账号 " + slot.Name + " 本次失败: " + _sendErr
                         + (AccountPool.LooksRateLimited(_sendErr) ? "（已标记限流并冷却）" : ""));
@@ -589,6 +591,11 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
             }
             finally
             {
+                if (slot != null && !slotDone)
+                {
+                    // 异常路径：归还预占名额，避免账号被"永久占用"
+                    try { AccountPool.I.OnSent(slot, false, "EXCEPTION", ""); } catch { }
+                }
                 if (!stream) { try { res.Close(); } catch { } }
                 Interlocked.Decrement(ref _inflight);
                 Notify();

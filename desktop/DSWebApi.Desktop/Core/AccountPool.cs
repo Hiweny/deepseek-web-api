@@ -18,7 +18,8 @@ public sealed class AccountSlot
     public bool PageReady;
     public bool LoggedIn;
     public bool Probed;
-    public int SentInSession;           // 当前这轮对话里已经连发几次（到上限就换下一个账号）
+    public int SentInSession;           // 当前这轮对话里已占用几个名额（含在途；到上限就换下一个账号）
+    public int Reserved;                // >0 表示有请求正在用这个账号（并发分散用）
     public string SessionId = "";
     public bool NeedNewChat;            // true = 下次用这个账号前，先「新开对话」
     public int RoundNo = 1;             // 该账号当前处在第几轮
@@ -45,7 +46,8 @@ public sealed class AccountSlot
         {
             if (!Enabled) return "已停用";
             if (InCooldown) return "冷却 " + FmtLeft(CooldownLeftSec);
-            if (LoggedIn) return (NeedNewChat ? "待新对话 · " : "已发 ") + SentInSession + "/" + Prefs.SessionSendLimit;
+            if (LoggedIn) return (NeedNewChat ? "待新对话 · " : "已发 ") + SentInSession + "/" + Prefs.SessionSendLimit
+                    + (Reserved > 0 ? "（在用）" : "");
             if (!Probed) return "加载中…";
             return "未登录";
         }
@@ -242,38 +244,51 @@ public sealed class AccountPool
             if (n == 0) return null;
             if (_cursor < 0 || _cursor >= n) _cursor = 0;
 
-            // ① 严格按顺序取一个「本轮还有名额」的账号，并**就地预占**一个名额。
-            //    预占发生在锁内，所以并发请求会各自拿到不同账号（而不是挤在同一个号上）。
-            var pick = TakeNextLocked(limit, out needNewChat);
-            if (pick != null) return pick;
+            // ① 续用「当前这一棒」：可用、还有余额、当前没有在途 → 同一个账号连发 N 次
+            var cur = _slots[_cursor];
+            if (Usable(cur) && cur.SentInSession < limit && cur.Reserved == 0)
+                return ReserveLocked(cur, ref needNewChat);
 
-            // ② 可用的账号本轮名额都占满了 → 开新一轮：全员新开对话，再取号
+            // ② 当前这一棒忙/在途 → 找别的「空闲（无在途）且还有余额」的账号
+            //    （并发请求因此会被分散到不同账号，而不是挤在同一个号上）
+            for (int k = 1; k < n; k++)
+            {
+                int idx = (_cursor + k) % n;
+                var s2 = _slots[idx];
+                if (!Usable(s2)) continue;
+                if (s2.SentInSession >= limit) continue;
+                if (s2.Reserved > 0) continue;
+                _cursor = idx;
+                return ReserveLocked(s2, ref needNewChat);
+            }
+
+            // ③ 其它账号都不空闲，但当前账号还有余额 → 继续用它（排队，不越界）
+            if (Usable(cur) && cur.SentInSession < limit)
+                return ReserveLocked(cur, ref needNewChat);
+
+            // ④ 可用的账号本轮余额都耗尽了 → 开新一轮：全员新开对话，再取
             if (!_slots.Any(Usable)) return null;
             StartNewCycleLocked();
-            return TakeNextLocked(limit, out needNewChat);
+            for (int k = 0; k < n; k++)
+            {
+                var s3 = _slots[k];
+                if (!Usable(s3)) continue;
+                _cursor = k;
+                return ReserveLocked(s3, ref needNewChat);
+            }
+            return null;
         }
     }
 
-    /// <summary>从光标开始严格顺序取号，并预占一个名额（调用方必须持有 _lk）。</summary>
-    private AccountSlot TakeNextLocked(int limit, out bool needNewChat)
+    /// <summary>就地预占一个名额（调用方必须持有 _lk）。</summary>
+    private AccountSlot ReserveLocked(AccountSlot s, ref bool needNewChat)
     {
-        needNewChat = false;
-        int n = _slots.Count;
-        for (int k = 0; k < n; k++)
-        {
-            int idx = (_cursor + k) % n;
-            var s = _slots[idx];
-            if (!Usable(s)) continue;
-            if (s.SentInSession >= limit) continue;
-            s.SentInSession++;              // ★ 预占名额：并发时保证分给不同账号
-            s.RoundNo = _cycleNo;
-            _cursor = (idx + 1) % n;
-            if (s.NeedNewChat) { needNewChat = true; s.NeedNewChat = false; }
-            return s;
-        }
-        return null;
+        s.SentInSession++;              // ★ 预占名额：并发时保证分给不同账号
+        s.Reserved++;
+        s.RoundNo = _cycleNo;
+        if (s.NeedNewChat) { needNewChat = true; s.NeedNewChat = false; }
+        return s;
     }
-
     /// <summary>当前连发上限（每个账号在一个对话里最多发几次）。</summary>
     public static int Limit()
     {
@@ -292,6 +307,7 @@ public sealed class AccountPool
         foreach (var s in _slots)
         {
             s.SentInSession = 0;
+            s.Reserved = 0;
             s.RoundNo = _cycleNo;
             if (Usable(s)) s.NeedNewChat = true;
         }
@@ -308,7 +324,7 @@ public sealed class AccountPool
     public void ReleaseReservation(AccountSlot s)
     {
         if (s == null) return;
-        lock (_lk) { if (s.SentInSession > 0) s.SentInSession--; s.NeedNewChat = true; }
+        lock (_lk) { if (s.Reserved > 0) s.Reserved--; if (s.SentInSession > 0) s.SentInSession--; s.NeedNewChat = true; }
         Notify();
     }
 
@@ -320,12 +336,7 @@ public sealed class AccountPool
             int n = _slots.Count;
             if (n == 0) return "—";
             if (_cursor < 0 || _cursor >= n) _cursor = 0;
-            for (int k = 0; k < n; k++)
-            {
-                var s = _slots[(_cursor + k) % n];
-                if (Usable(s) && s.SentInSession < Limit()) return s.Name;
-            }
-            return _slots[_cursor].Name + "（下一轮）";
+            return _slots[_cursor].Name;
         }
     }
 
@@ -350,6 +361,7 @@ public sealed class AccountPool
     {
         if (s == null) return;
         s.LastUsedMs = AccountSlot.NowMs;
+        if (s.Reserved > 0) s.Reserved--;
         s.TotalCalls++;
         if (ok) s.OkCalls++; else s.LastError = error ?? "";
         if (!string.IsNullOrEmpty(sessionId)) s.SessionId = sessionId;
@@ -360,6 +372,7 @@ public sealed class AccountPool
             s.RateLimitedCount++;
             s.CooldownUntil = AccountSlot.NowMs + Math.Max(1, Prefs.CooldownMinutes) * 60_000L;
             s.SentInSession = 0;   // 冷却结束后按新对话对待
+            s.Reserved = 0;
             s.NeedNewChat = true;
             Log.Write("!! 账号 " + s.Name + " 命中「消息发送频繁」→ 冷却 " + Prefs.CooldownMinutes + " 分钟");
         }
