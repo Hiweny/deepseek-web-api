@@ -298,6 +298,15 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
             AutoScroll = true, BackColor = CSide, Margin = Padding.Empty,
         };
+        _acctFlow.Resize += (s2, e2) =>
+        {
+            try
+            {
+                int w = Math.Max((int)(150 * _s), _acctFlow.ClientSize.Width - (int)(8 * _s));
+                foreach (Control c in _acctFlow.Controls) c.Width = w;
+            }
+            catch { }
+        };
         acctGrid.Controls.Add(_acctFlow, 0, 1);
         var addAcct = FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive());
         addAcct.Dock = DockStyle.Fill;
@@ -1161,6 +1170,16 @@ public sealed class MainForm : Form
         catch (Exception e) { Log.Write("切换轮换失败: " + e.Message); }
     }
 
+    /// <summary>账号状态的紧凑写法（chip 上用）。</summary>
+    private static string CompactState(AccountSlot s)
+    {
+        if (!s.Enabled) return "已停用";
+        if (s.InCooldown) return "冷却 " + AccountSlot.FmtLeft(s.CooldownLeftSec);
+        if (!s.PageReady) return "加载中";
+        if (!s.LoggedIn) return "未登录";
+        return "就绪 " + s.SentInSession + "/" + Prefs.SessionSendLimit;
+    }
+
     /// <summary>刷新侧栏账号列表 / 对话页 chip / 控制台状态（每秒调用，尽量只改文本不重建控件）。</summary>
     private void RefreshAccounts()
     {
@@ -1229,7 +1248,7 @@ public sealed class MainForm : Form
                 }
                 if (_chipBtns.TryGetValue(sl.Id, out var c))
                 {
-                    c.Text = dot + " " + sl.Name + " · " + sl.StateText;
+                    c.Text = dot + " " + sl.Name + " · " + CompactState(sl);
                     c.ForeColor = sl.Id == _currentAccountId ? CAccent : CText;
                     c.BackColor = sl.Id == _currentAccountId ? CAccentDim : CCard;
                 }
