@@ -175,6 +175,7 @@ public sealed class MainForm : Form
             b.AutoSize = false;
             b.Dock = DockStyle.Fill;
             b.MinimumSize = Size.Empty;
+            b.Padding = new Padding((int)(4 * _s), 0, (int)(4 * _s), 0);
             b.Margin = new Padding(i == 0 ? 0 : (int)(5 * _s), 0, i == n - 1 ? 0 : (int)(5 * _s), 0);
             t.Controls.Add(b, i, 0);
         }
@@ -494,7 +495,8 @@ public sealed class MainForm : Form
         grid.SetColumnSpan(t, 2);
         var sub = new Label
         {
-            Text = "把 chat.deepseek.com 官网封装成本机 / 局域网的 OpenAI 兼容接口", AutoSize = true,
+            Text = "把 chat.deepseek.com 官网封装成本机 / 局域网的 OpenAI 兼容接口",
+            AutoSize = false, AutoEllipsis = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = CSub, Font = F(FS_Body), Margin = new Padding(0, 0, 0, (int)(14 * _s)), BackColor = Color.Transparent,
         };
         grid.Controls.Add(sub, 0, 1);
@@ -521,9 +523,9 @@ public sealed class MainForm : Form
         _vLan = KV(c1, "局域网地址", ref y);
         _vKey = KV(c1, "API Key", ref y);
         var b1 = BtnRow(
-            ("复制本机地址", (s2, e2) => Copy(BaseUrl(true))),
-            ("复制 API Key", (s2, e2) => Copy(Prefs.ApiKey)),
-            ("复制局域网地址", (s2, e2) => Copy(BaseUrl(false))));
+            ("复制本机", (s2, e2) => Copy(BaseUrl(true))),
+            ("复制 Key", (s2, e2) => Copy(Prefs.ApiKey)),
+            ("复制局域网", (s2, e2) => Copy(BaseUrl(false))));
         b1.Left = Pad; b1.Top = y + (int)(12 * _s); b1.Width = (int)(520 * _s);
         c1.Controls.Add(b1);
         c1.Resize += (s2, e2) => FitTracked(c1);
@@ -542,9 +544,9 @@ public sealed class MainForm : Form
         };
         c5.Controls.Add(c5note);
         var b5 = BtnRow(
-            ("开关轮换", (s2, e2) => ToggleRotate()),
-            ("＋ 添加账号", (s2, e2) => AddAccountInteractive()),
-            ("调整连发次数…", (s2, e2) => EditSendLimit()));
+            ("轮换开关", (s2, e2) => ToggleRotate()),
+            ("＋ 账号", (s2, e2) => AddAccountInteractive()),
+            ("连发次数…", (s2, e2) => EditSendLimit()));
         b5.Left = Pad; b5.Top = y5 + (int)(84 * _s); b5.Width = (int)(520 * _s);
         c5.Controls.Add(b5);
         c5.Resize += (s2, e2) => FitTracked(c5);
