@@ -9,7 +9,7 @@ internal static class Program
 {
     public const string AppName = "DeepSeek Web API";
     public static string Version =>
-        Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.6";
+        Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.7";
 
     private static Mutex _singleInstance;
 

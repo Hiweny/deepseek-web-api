@@ -39,6 +39,14 @@ public sealed class MainForm : Form
 
     private Panel _content;
     private Label _toast;
+    private FlowLayoutPanel _acctFlow;          // 侧栏账号列表
+    private FlowLayoutPanel _acctChips;         // 对话页账号切换条
+    private Panel _acctHost;                    // 账号区容器
+    private Label _vRotate;                     // 控制台「多账号轮换」状态
+    private string _currentAccountId = "primary";
+    private List<string> _acctOrder = new List<string>();
+    private readonly Dictionary<string, Button> _acctBtns = new Dictionary<string, Button>();
+    private readonly Dictionary<string, Button> _chipBtns = new Dictionary<string, Button>();
     private System.Windows.Forms.Timer _toastTimer;
 
     private Panel _webHost;
@@ -64,6 +72,7 @@ public sealed class MainForm : Form
     {
         _startMinimized = startMinimized;
         _s = Math.Max(0.8f, Math.Min(2.0f, Prefs.UiScalePct / 100f));
+        try { AccountPool.I.LoadFromPrefs(); } catch (Exception e) { Log.Write("账号池载入失败: " + e.Message); }
 
         Text = Program.AppName + " v" + Program.Version + " · Windows";
         BackColor = CBg;
@@ -83,7 +92,12 @@ public sealed class MainForm : Form
         {
             try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(RefreshStats)); } catch { }
         };
-        WebBridge.I.SetStatusListener(new StatusForwarder(this));
+        WebBridge.I.Name = "主账号";
+        WebBridge.I.SetStatusListener(new StatusForwarder(this, AccountPool.I.Find("primary")));
+        AccountPool.I.Changed += () =>
+        {
+            try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(RefreshAccounts)); } catch { }
+        };
 
         _toastTimer = new System.Windows.Forms.Timer { Interval = 3200 };
         _toastTimer.Tick += (s, e) => { _toastTimer.Stop(); try { if (_toast != null) _toast.Visible = false; } catch { } };
@@ -226,9 +240,10 @@ public sealed class MainForm : Form
         /* ---- 侧边栏 ---- */
         var side = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CSide, Margin = Padding.Empty,
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = CSide, Margin = Padding.Empty,
         };
         side.RowStyles.Add(new RowStyle(SizeType.Absolute, 122 * _s));
+        side.RowStyles.Add(new RowStyle(SizeType.Absolute, 150 * _s));
         side.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         side.RowStyles.Add(new RowStyle(SizeType.Absolute, 152 * _s));
         root.Controls.Add(side, 0, 0);
@@ -265,6 +280,30 @@ public sealed class MainForm : Form
         side.Controls.Add(nav, 0, 1);
         AddNav(nav, "\uD83C\uDF9B   控制台", 0);
         AddNav(nav, "\uD83D\uDCAC   对话页", 1);
+
+        /* ---- 账号区：多开 + 轮换 ---- */
+        _acctHost = new Panel { Dock = DockStyle.Fill, BackColor = CSide, Padding = new Padding((int)(14 * _s), (int)(4 * _s), (int)(14 * _s), 0) };
+        var acctGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CSide, Margin = Padding.Empty };
+        acctGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30 * _s));
+        acctGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        acctGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48 * _s));
+        _acctHost.Controls.Add(acctGrid);
+        acctGrid.Controls.Add(new Label
+        {
+            Text = "账号 · 多开轮换", Dock = DockStyle.Fill, ForeColor = CSub, Font = F(10.5f),
+            TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent,
+        }, 0, 0);
+        _acctFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            AutoScroll = true, BackColor = CSide, Margin = Padding.Empty,
+        };
+        acctGrid.Controls.Add(_acctFlow, 0, 1);
+        var addAcct = FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive());
+        addAcct.Dock = DockStyle.Fill;
+        addAcct.Margin = new Padding(0, (int)(6 * _s), 0, (int)(8 * _s));
+        acctGrid.Controls.Add(addAcct, 0, 2);
+        side.Controls.Add(_acctHost, 0, 2);
 
         var foot = new TableLayoutPanel
         {
@@ -454,6 +493,28 @@ public sealed class MainForm : Form
         c3.Controls.Add(b3b);
         inner.Controls.Add(Wrap(c3));
 
+        /* 多账号轮换 */
+        var c5 = Card("多账号轮换", 196);
+        int y5 = (int)(58 * _s);
+        _vRotate = KV(c5, "轮换状态", ref y5);
+        var c5note = new Label
+        {
+            Left = (int)(22 * _s), Top = y5 + (int)(2 * _s), Width = (int)(960 * _s), Height = (int)(24 * _s),
+            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
+            Text = "开启后：每个账号一次会话最多连发 " + Prefs.SessionSendLimit + " 次就换下一个；命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。关闭 = 原来的单账号模式。",
+        };
+        c5.Controls.Add(c5note);
+        var b5 = new FlowLayoutPanel
+        {
+            Left = (int)(22 * _s), Top = y5 + (int)(32 * _s), Height = (int)(46 * _s),
+            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
+        };
+        b5.Controls.Add(FlatBtn("开关轮换", (s2, e2) => ToggleRotate(), true));
+        b5.Controls.Add(FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive()));
+        b5.Controls.Add(FlatBtn("去对话页", (s2, e2) => { SwitchPage(1); SelectAccount(_currentAccountId); }));
+        c5.Controls.Add(b5);
+        inner.Controls.Add(Wrap(c5));
+
         /* 客户端填写说明 */
         var c4 = Card("客户端填写（OpenAI 兼容）", 248);
         c4.Controls.Add(new Label
@@ -538,8 +599,9 @@ public sealed class MainForm : Form
     private Control BuildWebPage()
     {
         var host = new Panel { Dock = DockStyle.Fill, BackColor = CBg, AutoScroll = false };
-        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = CBg };
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = CBg };
         grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 58 * _s));
+        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 52 * _s));
         grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         host.Controls.Add(grid);
 
@@ -559,8 +621,16 @@ public sealed class MainForm : Form
         bar.Controls.Add(FlatBtn("+", (s, e) => Zoom(0.1)));
         grid.Controls.Add(bar, 0, 0);
 
+        /* 账号切换条：每个账号一个 chip，末尾 ＋ 新建 */
+        _acctChips = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
+            BackColor = CBg, AutoScroll = true, Padding = new Padding(0, 0, 0, (int)(8 * _s)),
+        };
+        grid.Controls.Add(_acctChips, 0, 1);
+
         _webHost = new Panel { Dock = DockStyle.Fill, BackColor = CCard, Padding = new Padding(1) };
-        grid.Controls.Add(_webHost, 0, 1);
+        grid.Controls.Add(_webHost, 0, 2);
 
         _webHint = new Label
         {
@@ -656,6 +726,8 @@ public sealed class MainForm : Form
             };
             await core.AddScriptToExecuteOnDocumentCreatedAsync(WebBridge.ShimJs);
 
+            var primary = AccountPool.I.Find("primary");
+            if (primary != null) { primary.Bridge = WebBridge.I; primary.View = _web; }
             WebBridge.I.Attach(core);
             core.Navigate(DsUrl);
             Log.Write("WebView2 初始化完成，开始加载 " + DsUrl);
@@ -707,6 +779,8 @@ public sealed class MainForm : Form
         menu.Items.Add("复制 API Key", null, (s, e) => Copy(Prefs.ApiKey));
         menu.Items.Add("新建对话", null, (s, e) => NewChat());
         menu.Items.Add("重载网页", null, (s, e) => ReloadWeb());
+        menu.Items.Add("多账号轮换（开/关）", null, (s, e) => ToggleRotate());
+        menu.Items.Add("新建账号窗口", null, (s, e) => AddAccountInteractive());
         var scale = new ToolStripMenuItem("界面缩放");
         foreach (var pct in new[] { 100, 115, 130, 150 })
         {
@@ -810,6 +884,7 @@ public sealed class MainForm : Form
         if (_tick % 5 == 0) WebBridge.I.Probe();
         if (_tick % 30 == 0 && WebBridge.I.IsAttached) WebBridge.I.InjectBridge();
         RefreshStats();
+        RefreshAccounts();
     }
 
     private void RefreshStats()
@@ -971,15 +1046,217 @@ public sealed class MainForm : Form
         base.OnFormClosing(e);
     }
 
+    /* ================= 账号 / 轮换 ================= */
+
+    /// <summary>把某个账号的 WebView2 实例挂起来（非主账号；各自独立数据目录 = 独立登录态与设备指纹）。</summary>
+    private async Task EnsureSlotViewAsync(AccountSlot slot)
+    {
+        if (slot == null || slot.IsPrimary) return;
+        if (slot.View is WebView2) return;
+        if (_webHost == null) return;
+        try
+        {
+            var wv = new WebView2 { Dock = DockStyle.Fill, Visible = false };
+            _webHost.Controls.Add(wv);
+            slot.View = wv;
+
+            var bridge = new WebBridge { Name = slot.Name, BridgeJs = WebBridge.I.BridgeJs };
+            slot.Bridge = bridge;
+
+            string udf = slot.DataDir;
+            Directory.CreateDirectory(udf);
+            var env = await CoreWebView2Environment.CreateAsync(null, udf);
+            await wv.EnsureCoreWebView2Async(env);
+            var core = wv.CoreWebView2;
+            try { core.Settings.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"; } catch { }
+            core.Settings.IsStatusBarEnabled = false;
+
+            core.WebMessageReceived += (s2, e2) =>
+            {
+                try { bridge.OnWebMessage(e2.TryGetWebMessageAsString()); } catch (Exception ex) { Log.Write("账号消息处理失败: " + ex.Message); }
+            };
+            bridge.SetStatusListener(new StatusForwarder(this, slot));
+            core.NavigationCompleted += (s2, e2) =>
+            {
+                bridge.MarkPageLoaded(e2.IsSuccess);
+                Log.Write("账号 " + slot.Name + " 页面加载 " + (e2.IsSuccess ? "成功" : "失败"));
+                if (e2.IsSuccess) { bridge.InjectBridge(); bridge.Probe(); }
+                RefreshAccounts();
+            };
+            core.ProcessFailed += (s2, e2) => { bridge.Detach(); slot.Note = "进程异常"; Log.Write("账号 " + slot.Name + " WebView2 进程异常"); };
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(WebBridge.ShimJs);
+            bridge.Attach(core);
+            core.Navigate(DsUrl);
+            Log.Write("账号 " + slot.Name + " 实例已创建 · 数据目录 " + udf);
+        }
+        catch (Exception e)
+        {
+            Log.Write("创建账号实例失败(" + slot.Name + "): " + e.Message);
+            slot.Note = "创建失败";
+        }
+    }
+
+    private async void SelectAccount(string id)
+    {
+        try
+        {
+            var slot = AccountPool.I.Find(id);
+            if (slot == null) return;
+            _currentAccountId = id;
+            SwitchPage(1);
+            if (!slot.IsPrimary) await EnsureSlotViewAsync(slot);
+            foreach (var s2 in AccountPool.I.Snapshot())
+                if (s2.View is WebView2 wv2) wv2.Visible = (s2.Id == id);
+            try { if (_webHint != null && slot.LoggedIn) _webHint.Visible = false; } catch { }
+            try { if (slot.View is WebView2 v2 && v2.CoreWebView2 != null) { slot.Bridge?.InjectBridge(); slot.Bridge?.Probe(); } } catch { }
+        }
+        catch (Exception e) { Log.Write("切换账号失败: " + e.Message); }
+        RefreshAccounts();
+    }
+
+    private async void AddAccountInteractive()
+    {
+        try
+        {
+            int n = AccountPool.I.Snapshot().Count;
+            string name = InputBox.Show(this, "新建账号（输入备注名）", "账号" + (n + 1));
+            if (name == null) return;
+            var slot = AccountPool.I.Add(string.IsNullOrWhiteSpace(name) ? ("账号" + (n + 1)) : name.Trim());
+            await EnsureSlotViewAsync(slot);
+            SelectAccount(slot.Id);
+            Toast("已新增账号「" + slot.Name + "」，请在这个窗口登录 DeepSeek 官网");
+        }
+        catch (Exception e) { Log.Write("新建账号失败: " + e.Message); }
+    }
+
+    private void RemoveAccount(AccountSlot slot)
+    {
+        try
+        {
+            if (slot == null || slot.IsPrimary) { Toast("主账号不可删除"); return; }
+            if (MessageBox.Show(this, "确定移除账号「" + slot.Name + "」？\n\n只从轮换列表移除，不删除它的本地数据（" + slot.DataDir + "）。",
+                Program.AppName, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            if (slot.View is WebView2 wv) { try { _webHost.Controls.Remove(wv); wv.Dispose(); } catch { } }
+            AccountPool.I.Remove(slot.Id);
+            if (_currentAccountId == slot.Id) _currentAccountId = "primary";
+            RefreshAccounts();
+        }
+        catch (Exception e) { Log.Write("删除账号失败: " + e.Message); }
+    }
+
+    private async void ToggleRotate()
+    {
+        try
+        {
+            Prefs.RotateEnabled = !Prefs.RotateEnabled;
+            Toast(Prefs.RotateEnabled ? "多账号轮换已开启" : "多账号轮换已关闭（回到单账号模式）");
+            if (Prefs.RotateEnabled)
+            {
+                foreach (var sl in AccountPool.I.Snapshot().Where(x => x.Enabled && !x.IsPrimary))
+                    await EnsureSlotViewAsync(sl);
+            }
+            RefreshAccounts();
+            RefreshStats();
+        }
+        catch (Exception e) { Log.Write("切换轮换失败: " + e.Message); }
+    }
+
+    /// <summary>刷新侧栏账号列表 / 对话页 chip / 控制台状态（每秒调用，尽量只改文本不重建控件）。</summary>
+    private void RefreshAccounts()
+    {
+        try
+        {
+            var slots = AccountPool.I.Snapshot();
+            var order = slots.Select(x => x.Id).ToList();
+            bool rebuild = !order.SequenceEqual(_acctOrder);
+            if (rebuild)
+            {
+                _acctOrder = order;
+                _acctBtns.Clear();
+                _chipBtns.Clear();
+                try { _acctFlow?.Controls.Clear(); } catch { }
+                try { _acctChips?.Controls.Clear(); } catch { }
+                foreach (var sl in slots)
+                {
+                    var b = new Button
+                    {
+                        Text = "● " + sl.Name, Width = Math.Max((int)(180 * _s), (_acctFlow?.ClientSize.Width ?? (int)(240 * _s)) - (int)(10 * _s)),
+                        Height = (int)(48 * _s), FlatStyle = FlatStyle.Flat, BackColor = CSide, ForeColor = CText,
+                        Font = F(10.5f), TextAlign = ContentAlignment.MiddleLeft, Cursor = Cursors.Hand,
+                        Margin = new Padding(0, (int)(2 * _s), 0, (int)(2 * _s)),
+                        Padding = new Padding((int)(10 * _s), 0, 0, 0), UseVisualStyleBackColor = false,
+                    };
+                    b.FlatAppearance.BorderSize = 0;
+                    b.FlatAppearance.MouseOverBackColor = CAccentDim;
+                    var cap = sl;
+                    b.Click += (s2, e2) => SelectAccount(cap.Id);
+                    var menu = new ContextMenuStrip();
+                    menu.Items.Add("在对话页打开", null, (s2, e2) => SelectAccount(cap.Id));
+                    menu.Items.Add("移除该账号", null, (s2, e2) => RemoveAccount(cap));
+                    b.ContextMenuStrip = menu;
+                    _acctFlow?.Controls.Add(b);
+                    _acctBtns[sl.Id] = b;
+
+                    var chip = new Button
+                    {
+                        Text = "● " + sl.Name, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                        Height = (int)(38 * _s), FlatStyle = FlatStyle.Flat, BackColor = CCard, ForeColor = CText,
+                        Font = F(10.5f), Cursor = Cursors.Hand,
+                        Margin = new Padding(0, 0, (int)(8 * _s), 0),
+                        Padding = new Padding((int)(12 * _s), 0, (int)(12 * _s), 0), UseVisualStyleBackColor = false,
+                    };
+                    chip.FlatAppearance.BorderColor = CLine;
+                    chip.FlatAppearance.MouseOverBackColor = CAccentDim;
+                    chip.Click += (s2, e2) => SelectAccount(cap.Id);
+                    chip.ContextMenuStrip = menu;
+                    _acctChips?.Controls.Add(chip);
+                    _chipBtns[sl.Id] = chip;
+                }
+                var addChip = FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive());
+                addChip.Height = (int)(38 * _s);
+                _acctChips?.Controls.Add(addChip);
+            }
+
+            foreach (var sl in slots)
+            {
+                string dot = !sl.Enabled ? "○" : sl.InCooldown ? "⏳" : (!sl.PageReady ? "◌" : (sl.LoggedIn ? "●" : "○"));
+                string line = dot + " " + sl.Name + "\r\n" + sl.StateText;
+                if (_acctBtns.TryGetValue(sl.Id, out var b))
+                {
+                    b.Text = line;
+                    b.ForeColor = sl.Id == _currentAccountId ? CAccent : CText;
+                    b.BackColor = sl.Id == _currentAccountId ? CAccentDim : CSide;
+                }
+                if (_chipBtns.TryGetValue(sl.Id, out var c))
+                {
+                    c.Text = dot + " " + sl.Name + " · " + sl.StateText;
+                    c.ForeColor = sl.Id == _currentAccountId ? CAccent : CText;
+                    c.BackColor = sl.Id == _currentAccountId ? CAccentDim : CCard;
+                }
+            }
+            if (_vRotate != null)
+                _vRotate.Text = (Prefs.RotateEnabled ? "已开启" : "已关闭") + " · " + AccountPool.I.SummaryText()
+                    + " · 上限 " + Prefs.SessionSendLimit + " 次/账号";
+        }
+        catch { }
+    }
+
     /// <summary>把 bridge 状态转发给引擎（UI 线程）。</summary>
     private sealed class StatusForwarder : WebBridge.IStatusListener
     {
         private readonly MainForm _f;
-        public StatusForwarder(MainForm f) { _f = f; }
+        private readonly AccountSlot _slot;
+        public StatusForwarder(MainForm f, AccountSlot slot) { _f = f; _slot = slot; }
         public void OnStatus(string json)
         {
             ChatEngine.I.OnStatus(json);
-            try { if (_f.IsHandleCreated && !_f.IsDisposed) _f.BeginInvoke(new Action(_f.RefreshStats)); } catch { }
+            if (_slot != null) ChatEngine.I.OnSlotStatus(_slot, json);
+            try
+            {
+                if (_f.IsHandleCreated && !_f.IsDisposed)
+                    _f.BeginInvoke(new Action(() => { _f.RefreshAccounts(); _f.RefreshStats(); }));
+            }
+            catch { }
         }
     }
 }
