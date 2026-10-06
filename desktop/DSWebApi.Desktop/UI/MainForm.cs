@@ -159,6 +159,28 @@ public sealed class MainForm : Form
         return b;
     }
 
+    /// <summary>等分按钮行：按钮按列等分占满卡片宽度，卡片再窄也不会把按钮挤出去。</summary>
+    private TableLayoutPanel BtnRow(params (string text, EventHandler onClick)[] items)
+    {
+        int n = Math.Max(1, items.Length);
+        var t = new TableLayoutPanel
+        {
+            ColumnCount = n, RowCount = 1, Height = (int)(42 * _s),
+            BackColor = Color.Transparent, Margin = Padding.Empty, Tag = "fillw",
+        };
+        for (int i = 0; i < n; i++)
+        {
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / n));
+            var b = FlatBtn(items[i].text, items[i].onClick, i == 0);
+            b.AutoSize = false;
+            b.Dock = DockStyle.Fill;
+            b.MinimumSize = Size.Empty;
+            b.Margin = new Padding(i == 0 ? 0 : (int)(5 * _s), 0, i == n - 1 ? 0 : (int)(5 * _s), 0);
+            t.Controls.Add(b, i, 0);
+        }
+        return t;
+    }
+
     /// <summary>圆角卡片容器（统一外观）。</summary>
     private Panel Card(string title, int height)
     {
@@ -495,17 +517,14 @@ public sealed class MainForm : Form
         /* 接口信息 */
         var c1 = Card("接口信息", 246);
         int y = (int)(56 * _s);
-        _vBase = KV(c1, "Base URL（本机）", ref y);
-        _vLan = KV(c1, "Base URL（局域网）", ref y);
+        _vBase = KV(c1, "本机地址", ref y);
+        _vLan = KV(c1, "局域网地址", ref y);
         _vKey = KV(c1, "API Key", ref y);
-        var b1 = new FlowLayoutPanel
-        {
-            Left = Pad, Top = y + (int)(12 * _s), Height = (int)(44 * _s),
-            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
-        };
-        b1.Controls.Add(FlatBtn("复制地址", (s2, e2) => Copy(BaseUrl(true)), true));
-        b1.Controls.Add(FlatBtn("复制 Key", (s2, e2) => Copy(Prefs.ApiKey)));
-        b1.Controls.Add(FlatBtn("局域网", (s2, e2) => Copy(BaseUrl(false))));
+        var b1 = BtnRow(
+            ("复制本机地址", (s2, e2) => Copy(BaseUrl(true))),
+            ("复制 API Key", (s2, e2) => Copy(Prefs.ApiKey)),
+            ("复制局域网地址", (s2, e2) => Copy(BaseUrl(false))));
+        b1.Left = Pad; b1.Top = y + (int)(12 * _s); b1.Width = (int)(520 * _s);
         c1.Controls.Add(b1);
         c1.Resize += (s2, e2) => FitTracked(c1);
         grid.Controls.Add(c1, 0, 3);
@@ -516,22 +535,19 @@ public sealed class MainForm : Form
         _vRotate = KV(c5, "轮换状态", ref y5);
         var c5note = new Label
         {
-            Left = Pad, Top = y5 + (int)(2 * _s), Width = (int)(520 * _s), Height = (int)(66 * _s),
+            Left = Pad, Top = y5 + (int)(2 * _s), Width = (int)(520 * _s), Height = (int)(74 * _s),
             AutoSize = false, ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent, Tag = "fillw",
-            Text = "顺序轮流：每个账号在同一个对话里连发 " + Prefs.SessionSendLimit + " 次 → 换下一个；\r\n"
-                 + "全员轮完一圈 → 各账号新开对话（不在旧对话继续）；\r\n"
-                 + "命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。",
+            Text = "顺序轮流：每个账号在同一对话里连发 " + Prefs.SessionSendLimit + " 次 → 换下一个账号；"
+                 + "全员轮完一圈 → 各账号新开对话；命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。",
         };
         c5.Controls.Add(c5note);
-        var b5 = new FlowLayoutPanel
-        {
-            Left = Pad, Top = y5 + (int)(76 * _s), Height = (int)(44 * _s),
-            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
-        };
-        b5.Controls.Add(FlatBtn("开关轮换", (s2, e2) => ToggleRotate(), true));
-        b5.Controls.Add(FlatBtn("＋ 账号", (s2, e2) => AddAccountInteractive()));
-        b5.Controls.Add(FlatBtn("调整次数…", (s2, e2) => EditSendLimit()));
+        var b5 = BtnRow(
+            ("开关轮换", (s2, e2) => ToggleRotate()),
+            ("＋ 添加账号", (s2, e2) => AddAccountInteractive()),
+            ("调整连发次数…", (s2, e2) => EditSendLimit()));
+        b5.Left = Pad; b5.Top = y5 + (int)(84 * _s); b5.Width = (int)(520 * _s);
         c5.Controls.Add(b5);
+        c5.Resize += (s2, e2) => FitTracked(c5);
         grid.Controls.Add(c5, 1, 3);
 
         /* 账号调用情况 */
@@ -562,31 +578,22 @@ public sealed class MainForm : Form
 
         /* 常用操作 */
         var c3 = Card("常用操作", 220);
-        var b3 = new FlowLayoutPanel
-        {
-            Left = Pad, Top = (int)(54 * _s), Height = (int)(42 * _s),
-            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
-        };
-        b3.Controls.Add(FlatBtn("新建对话", (s2, e2) => NewChat()));
-        b3.Controls.Add(FlatBtn("重载网页", (s2, e2) => ReloadWeb()));
-        b3.Controls.Add(FlatBtn("检查更新", (s2, e2) => CheckUpdate()));
-        var b3b = new FlowLayoutPanel
-        {
-            Left = Pad, Top = (int)(104 * _s), Height = (int)(42 * _s),
-            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
-        };
-        b3b.Controls.Add(FlatBtn("设置", (s2, e2) => ShowSettings()));
-        b3b.Controls.Add(FlatBtn("日志", (s2, e2) => OpenFile(Log.FilePath)));
-        b3b.Controls.Add(FlatBtn("数据目录", (s2, e2) => OpenFolder(Log.Dir)));
-        var b3c = new FlowLayoutPanel
-        {
-            Left = Pad, Top = (int)(154 * _s), Height = (int)(42 * _s),
-            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
-        };
-        b3c.Controls.Add(FlatBtn("放行防火墙（需管理员）", (s2, e2) => AddFirewallRule()));
+        var b3 = BtnRow(
+            ("新建对话", (s2, e2) => NewChat()),
+            ("重载网页", (s2, e2) => ReloadWeb()),
+            ("检查更新", (s2, e2) => CheckUpdate()));
+        b3.Left = Pad; b3.Top = (int)(54 * _s); b3.Width = (int)(520 * _s);
+        var b3b = BtnRow(
+            ("打开设置", (s2, e2) => ShowSettings()),
+            ("打开日志", (s2, e2) => OpenFile(Log.FilePath)),
+            ("数据目录", (s2, e2) => OpenFolder(Log.Dir)));
+        b3b.Left = Pad; b3b.Top = (int)(102 * _s); b3b.Width = (int)(520 * _s);
+        var b3c = BtnRow(("放行防火墙（需管理员权限）", (s2, e2) => AddFirewallRule()));
+        b3c.Left = Pad; b3c.Top = (int)(150 * _s); b3c.Width = (int)(520 * _s);
         c3.Controls.Add(b3);
         c3.Controls.Add(b3b);
         c3.Controls.Add(b3c);
+        c3.Resize += (s2, e2) => FitTracked(c3);
         grid.Controls.Add(c3, 1, 5);
 
         /* 客户端填写 */
@@ -656,12 +663,13 @@ public sealed class MainForm : Form
     {
         card.Controls.Add(new Label
         {
-            Text = name, Left = Pad, Top = y + (int)(5 * _s), AutoSize = true,
+            Text = name, Left = Pad, Top = y + (int)(5 * _s), AutoSize = false,
+            Width = (int)(104 * _s), Height = (int)(22 * _s), AutoEllipsis = true,
             ForeColor = CSub, Font = F(FS_Body), BackColor = Color.Transparent,
         });
         var v = new Label
         {
-            Text = "—", Left = (int)(150 * _s), Top = y, AutoSize = false,
+            Text = "—", Left = (int)(118 * _s), Top = y, AutoSize = false,
             Height = (int)(23 * _s), Width = (int)(420 * _s),
             AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = CText, Font = F(FS_Value), BackColor = Color.Transparent, Tag = "kvval",
@@ -683,7 +691,7 @@ public sealed class MainForm : Form
             {
                 string k = c.Tag as string;
                 if (k == "fillw") c.Width = Math.Max((int)(140 * _s), w - Pad * 2);
-                else if (k == "kvval") c.Width = Math.Max((int)(90 * _s), w - (int)(150 * _s) - Pad);
+                else if (k == "kvval") c.Width = Math.Max((int)(80 * _s), w - (int)(118 * _s) - Pad);
             }
         }
         catch { }
