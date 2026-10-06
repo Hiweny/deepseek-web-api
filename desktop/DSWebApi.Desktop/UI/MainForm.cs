@@ -123,6 +123,7 @@ public sealed class MainForm : Form
             Log.Write("界面已显示");
             ApplyDarkChrome();
             try { BeginInvoke(new Action(() => { ApplyDarkChrome(); RefreshAccounts(); })); } catch { }
+            StartUiSizeAudit();
             ChatEngine.I.StartAll(Prefs.Port);
             RefreshStats();
             _ = InitWebAsync();
@@ -160,26 +161,25 @@ public sealed class MainForm : Form
     }
 
     /// <summary>等分按钮行：按钮按列等分占满卡片宽度，卡片再窄也不会把按钮挤出去。</summary>
-    private TableLayoutPanel BtnRow(params (string text, EventHandler onClick)[] items)
+    private FlowLayoutPanel BtnRow(params (string text, EventHandler onClick)[] items)
     {
-        int n = Math.Max(1, items.Length);
-        var t = new TableLayoutPanel
+        var f = new FlowLayoutPanel
         {
-            ColumnCount = n, RowCount = 1, Height = (int)(42 * _s),
-            BackColor = Color.Transparent, Margin = Padding.Empty, Tag = "fillw",
+            FlowDirection = FlowDirection.LeftToRight, WrapContents = true,
+            Height = (int)(92 * _s), BackColor = Color.Transparent, Margin = Padding.Empty,
+            Padding = Padding.Empty, Tag = "fillw",
         };
-        for (int i = 0; i < n; i++)
+        foreach (var it in items)
         {
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / n));
-            var b = FlatBtn(items[i].text, items[i].onClick, i == 0);
-            b.AutoSize = false;
-            b.Dock = DockStyle.Fill;
+            var b = FlatBtn(it.text, it.onClick);
+            b.Height = (int)(40 * _s);
             b.MinimumSize = Size.Empty;
-            b.Padding = new Padding((int)(4 * _s), 0, (int)(4 * _s), 0);
-            b.Margin = new Padding(i == 0 ? 0 : (int)(5 * _s), 0, i == n - 1 ? 0 : (int)(5 * _s), 0);
-            t.Controls.Add(b, i, 0);
+            b.AutoSize = true;
+            b.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            b.Margin = new Padding(0, 0, (int)(8 * _s), (int)(8 * _s));
+            f.Controls.Add(b);
         }
-        return t;
+        return f;
     }
 
     /// <summary>圆角卡片容器（统一外观）。</summary>
@@ -466,7 +466,7 @@ public sealed class MainForm : Form
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        int[] rows = { 46, 30, 122, 258, 266, 232, 244, 12 };
+        int[] rows = { 46, 30, 122, 310, 266, 280, 244, 12 };
         foreach (var r in rows) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, (int)(r * _s)));
         host.Controls.Add(grid);
 
@@ -517,22 +517,22 @@ public sealed class MainForm : Form
         grid.SetColumnSpan(tiles, 2);
 
         /* 接口信息 */
-        var c1 = Card("接口信息", 246);
+        var c1 = Card("接口信息", 298);
         int y = (int)(56 * _s);
         _vBase = KV(c1, "本机地址", ref y);
         _vLan = KV(c1, "局域网地址", ref y);
         _vKey = KV(c1, "API Key", ref y);
         var b1 = BtnRow(
-            ("复制本机", (s2, e2) => Copy(BaseUrl(true))),
-            ("复制 Key", (s2, e2) => Copy(Prefs.ApiKey)),
-            ("复制局域网", (s2, e2) => Copy(BaseUrl(false))));
+            ("复制本机地址", (s2, e2) => Copy(BaseUrl(true))),
+            ("复制 API Key", (s2, e2) => Copy(Prefs.ApiKey)),
+            ("复制局域网地址", (s2, e2) => Copy(BaseUrl(false))));
         b1.Left = Pad; b1.Top = y + (int)(12 * _s); b1.Width = (int)(520 * _s);
         c1.Controls.Add(b1);
         c1.Resize += (s2, e2) => FitTracked(c1);
         grid.Controls.Add(c1, 0, 3);
 
         /* 多账号轮换 */
-        var c5 = Card("多账号轮换", 246);
+        var c5 = Card("多账号轮换", 298);
         int y5 = (int)(56 * _s);
         _vRotate = KV(c5, "轮换状态", ref y5);
         var c5note = new Label
@@ -545,8 +545,8 @@ public sealed class MainForm : Form
         c5.Controls.Add(c5note);
         var b5 = BtnRow(
             ("轮换开关", (s2, e2) => ToggleRotate()),
-            ("＋ 账号", (s2, e2) => AddAccountInteractive()),
-            ("连发次数…", (s2, e2) => EditSendLimit()));
+            ("＋ 添加账号", (s2, e2) => AddAccountInteractive()),
+            ("调整连发次数…", (s2, e2) => EditSendLimit()));
         b5.Left = Pad; b5.Top = y5 + (int)(84 * _s); b5.Width = (int)(520 * _s);
         c5.Controls.Add(b5);
         c5.Resize += (s2, e2) => FitTracked(c5);
@@ -579,7 +579,7 @@ public sealed class MainForm : Form
         grid.Controls.Add(c2, 0, 5);
 
         /* 常用操作 */
-        var c3 = Card("常用操作", 220);
+        var c3 = Card("常用操作", 268);
         var b3 = BtnRow(
             ("新建对话", (s2, e2) => NewChat()),
             ("重载网页", (s2, e2) => ReloadWeb()),
@@ -1442,6 +1442,45 @@ public sealed class MainForm : Form
     {
         base.OnHandleCreated(e);
         ApplyDarkChrome();
+    }
+
+    /// <summary>启动 3 秒后把所有按钮的「实际可用宽度」与「文字所需宽度」写进日志，便于远程判断有没有被裁切。</summary>
+    private void StartUiSizeAudit()
+    {
+        try
+        {
+            var t = new System.Windows.Forms.Timer { Interval = 3500 };
+            t.Tick += (s2, e2) =>
+            {
+                t.Stop(); t.Dispose();
+                try
+                {
+                    var sb = new System.Text.StringBuilder();
+                    int bad = 0;
+                    void Dump(Control root)
+                    {
+                        foreach (Control c in root.Controls)
+                        {
+                            if (c is Button b && !string.IsNullOrEmpty(b.Text))
+                            {
+                                int need = TextRenderer.MeasureText(b.Text, b.Font).Width;
+                                int avail = b.ClientSize.Width - b.Padding.Horizontal - 4;
+                                bool clip = need > avail;
+                                if (clip) bad++;
+                                sb.Append("[").Append(b.Text).Append(" need=").Append(need)
+                                  .Append(" avail=").Append(avail).Append(clip ? " CLIP!" : " ok").Append("] ");
+                            }
+                            if (c.HasChildren) Dump(c);
+                        }
+                    }
+                    Dump(this);
+                    Log.Write("UI 尺寸自检（裁切 " + bad + " 处）: " + sb);
+                }
+                catch (Exception ex) { Log.Write("UI 尺寸自检失败: " + ex.Message); }
+            };
+            t.Start();
+        }
+        catch { }
     }
 
     private void ApplyDarkChrome()
