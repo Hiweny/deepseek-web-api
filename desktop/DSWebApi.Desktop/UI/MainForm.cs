@@ -121,6 +121,8 @@ public sealed class MainForm : Form
         Shown += (s, e) =>
         {
             Log.Write("界面已显示");
+            ApplyDarkChrome();
+            try { BeginInvoke(new Action(() => { ApplyDarkChrome(); RefreshAccounts(); })); } catch { }
             ChatEngine.I.StartAll(Prefs.Port);
             RefreshStats();
             _ = InitWebAsync();
@@ -358,7 +360,7 @@ public sealed class MainForm : Form
         foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 48 * _s));
         _sideState = new Label
         {
-            Dock = DockStyle.Fill, ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
+            Dock = DockStyle.Fill, ForeColor = CSub, Font = F(11f), BackColor = Color.Transparent,
             Text = "服务：—",
         };
         foot.Controls.Add(_sideState, 0, 1);
@@ -499,12 +501,13 @@ public sealed class MainForm : Form
         var b1 = new FlowLayoutPanel
         {
             Left = Pad, Top = y + (int)(12 * _s), Height = (int)(44 * _s),
-            Width = (int)(760 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
         };
-        b1.Controls.Add(FlatBtn("复制 Base URL", (s2, e2) => Copy(BaseUrl(true)), true));
+        b1.Controls.Add(FlatBtn("复制本机地址", (s2, e2) => Copy(BaseUrl(true)), true));
         b1.Controls.Add(FlatBtn("复制 API Key", (s2, e2) => Copy(Prefs.ApiKey)));
-        b1.Controls.Add(FlatBtn("复制局域网地址", (s2, e2) => Copy(BaseUrl(false))));
+        b1.Controls.Add(FlatBtn("复制局域网", (s2, e2) => Copy(BaseUrl(false))));
         c1.Controls.Add(b1);
+        c1.Resize += (s2, e2) => FitTracked(c1);
         grid.Controls.Add(c1, 0, 3);
 
         /* 多账号轮换 */
@@ -513,19 +516,20 @@ public sealed class MainForm : Form
         _vRotate = KV(c5, "轮换状态", ref y5);
         var c5note = new Label
         {
-            Left = Pad, Top = y5 + (int)(2 * _s), Width = (int)(760 * _s), Height = (int)(62 * _s),
-            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
-            Text = "顺序轮流：每个账号在同一个对话里连发 " + Prefs.SessionSendLimit + " 次 → 换下一个账号；\r\n"
-                 + "全部账号轮完一圈 → 全员新开对话（不在旧对话上继续）；命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。",
+            Left = Pad, Top = y5 + (int)(2 * _s), Width = (int)(520 * _s), Height = (int)(66 * _s),
+            AutoSize = false, ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent, Tag = "fillw",
+            Text = "顺序轮流：每个账号在同一个对话里连发 " + Prefs.SessionSendLimit + " 次 → 换下一个；\r\n"
+                 + "全员轮完一圈 → 各账号新开对话（不在旧对话继续）；\r\n"
+                 + "命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。",
         };
         c5.Controls.Add(c5note);
         var b5 = new FlowLayoutPanel
         {
-            Left = Pad, Top = y5 + (int)(70 * _s), Height = (int)(44 * _s),
-            Width = (int)(760 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Left = Pad, Top = y5 + (int)(76 * _s), Height = (int)(44 * _s),
+            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
         };
         b5.Controls.Add(FlatBtn("开关轮换", (s2, e2) => ToggleRotate(), true));
-        b5.Controls.Add(FlatBtn("＋ 添加账号", (s2, e2) => AddAccountInteractive()));
+        b5.Controls.Add(FlatBtn("＋ 账号", (s2, e2) => AddAccountInteractive()));
         b5.Controls.Add(FlatBtn("调整次数…", (s2, e2) => EditSendLimit()));
         c5.Controls.Add(b5);
         grid.Controls.Add(c5, 1, 3);
@@ -534,7 +538,7 @@ public sealed class MainForm : Form
         var c6 = Card("账号调用情况（轮换顺序）", 254);
         _acctTable = new TableLayoutPanel
         {
-            Left = Pad, Top = (int)(56 * _s), Width = (int)(860 * _s), Height = (int)(180 * _s),
+            Left = Pad, Top = (int)(56 * _s), Width = (int)(520 * _s), Height = (int)(182 * _s),
             ColumnCount = 6, BackColor = Color.Transparent, AutoScroll = true, Margin = Padding.Empty,
         };
         _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46 * _s));
@@ -543,7 +547,7 @@ public sealed class MainForm : Form
         _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 16));
         _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
         _acctTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
-        _acctTable.Resize += (s2, e2) => { try { _acctTable.Width = Math.Max((int)(520 * _s), c6.ClientSize.Width - Pad * 2); } catch { } };
+        c6.Resize += (s2, e2) => { try { _acctTable.Width = Math.Max((int)(420 * _s), c6.ClientSize.Width - Pad * 2); } catch { } };
         c6.Controls.Add(_acctTable);
         grid.Controls.Add(c6, 0, 4);
         grid.SetColumnSpan(c6, 2);
@@ -561,7 +565,7 @@ public sealed class MainForm : Form
         var b3 = new FlowLayoutPanel
         {
             Left = Pad, Top = (int)(58 * _s), Height = (int)(44 * _s),
-            Width = (int)(760 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
         };
         b3.Controls.Add(FlatBtn("新建对话", (s2, e2) => NewChat()));
         b3.Controls.Add(FlatBtn("重载网页", (s2, e2) => ReloadWeb()));
@@ -569,11 +573,11 @@ public sealed class MainForm : Form
         var b3b = new FlowLayoutPanel
         {
             Left = Pad, Top = (int)(112 * _s), Height = (int)(44 * _s),
-            Width = (int)(760 * _s), BackColor = Color.Transparent, WrapContents = false,
+            Width = (int)(520 * _s), BackColor = Color.Transparent, WrapContents = false, Tag = "fillw",
         };
-        b3b.Controls.Add(FlatBtn("打开设置", (s2, e2) => ShowSettings()));
-        b3b.Controls.Add(FlatBtn("打开日志", (s2, e2) => OpenFile(Log.FilePath)));
-        b3b.Controls.Add(FlatBtn("打开数据目录", (s2, e2) => OpenFolder(Log.Dir)));
+        b3b.Controls.Add(FlatBtn("设置", (s2, e2) => ShowSettings()));
+        b3b.Controls.Add(FlatBtn("日志", (s2, e2) => OpenFile(Log.FilePath)));
+        b3b.Controls.Add(FlatBtn("数据目录", (s2, e2) => OpenFolder(Log.Dir)));
         b3b.Controls.Add(FlatBtn("放行防火墙", (s2, e2) => AddFirewallRule()));
         c3.Controls.Add(b3);
         c3.Controls.Add(b3b);
@@ -583,16 +587,16 @@ public sealed class MainForm : Form
         var c4 = Card("客户端填写（OpenAI 兼容）", 232);
         c4.Controls.Add(new Label
         {
-            Left = Pad, Top = (int)(58 * _s), Width = (int)(860 * _s), Height = (int)(104 * _s),
-            ForeColor = CText, Font = F(12f), BackColor = Color.Transparent,
+            Left = Pad, Top = (int)(58 * _s), Width = (int)(520 * _s), Height = (int)(104 * _s),
+            AutoSize = false, ForeColor = CText, Font = F(12f), BackColor = Color.Transparent, Tag = "fillw",
             Text = "Base URL : http://127.0.0.1:8787/v1      # 局域网设备换成上面的局域网地址\r\n" +
                    "API Key  : " + Prefs.ApiKey + "\r\n" +
                    "Model    : deepseek                     # 任意名称均可",
         });
         c4.Controls.Add(new Label
         {
-            Left = Pad, Top = (int)(166 * _s), Width = (int)(860 * _s), Height = (int)(54 * _s),
-            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
+            Left = Pad, Top = (int)(166 * _s), Width = (int)(520 * _s), Height = (int)(58 * _s),
+            AutoSize = false, ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent, Tag = "fillw",
             Text = "局域网访问需放行防火墙（点上面的按钮或手动执行 netsh）；调用前请先在「对话页」登录官网，未登录时接口返回 503。\r\n" +
                    "升级方式：下载新版 exe，关闭本程序后直接覆盖旧文件即可（数据与登录态在 %LOCALAPPDATA%\\DeepSeekWebAPI，不受影响）。",
         });
@@ -650,12 +654,32 @@ public sealed class MainForm : Form
         });
         var v = new Label
         {
-            Text = "—", Left = (int)(230 * _s), Top = y, AutoSize = true, MaximumSize = new Size((int)(1200 * _s), 0),
-            ForeColor = CText, Font = F(FS_Value), BackColor = Color.Transparent,
+            Text = "—", Left = (int)(220 * _s), Top = y, AutoSize = false,
+            Height = (int)(23 * _s), Width = (int)(420 * _s),
+            AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = CText, Font = F(FS_Value), BackColor = Color.Transparent, Tag = "kvval",
         };
         card.Controls.Add(v);
+        card.Resize += (s2, e2) => FitTracked(card);
         y += RowH;
         return v;
+    }
+
+    /// <summary>宽度自适应：Tag=fillw 的控件宽度跟随卡片；Tag=kvval 的值标签占满剩余宽度（超长省略号）。</summary>
+    private void FitTracked(Panel card)
+    {
+        try
+        {
+            int w = card.ClientSize.Width;
+            if (w <= 0) return;
+            foreach (Control c in card.Controls)
+            {
+                string k = c.Tag as string;
+                if (k == "fillw") c.Width = Math.Max((int)(140 * _s), w - Pad * 2);
+                else if (k == "kvval") c.Width = Math.Max((int)(120 * _s), w - (int)(220 * _s) - Pad);
+            }
+        }
+        catch { }
     }
 
     /* ---------- 对话页 ---------- */
