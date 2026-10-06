@@ -247,6 +247,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
             string type = o.Str("type");
             if (type == "probe" || type == "boot")
             {
+                slot.Probed = true;
                 if (o.Has("loggedIn")) slot.LoggedIn = o.Bool("loggedIn");
                 if (o.Has("ready")) slot.PageReady = o.Bool("ready");
                 string sid = o.Str("sessionId", "");

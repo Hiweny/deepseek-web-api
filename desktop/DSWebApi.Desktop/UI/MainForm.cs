@@ -472,19 +472,20 @@ public sealed class MainForm : Form
         inner.Controls.Add(Wrap(c1));
 
         /* 多账号轮换 */
-        var c5 = Card("多账号轮换", 196);
+        var c5 = Card("多账号轮换", 224);
         int y5 = (int)(58 * _s);
         _vRotate = KV(c5, "轮换状态", ref y5);
         var c5note = new Label
         {
-            Left = (int)(22 * _s), Top = y5 + (int)(2 * _s), Width = (int)(960 * _s), Height = (int)(24 * _s),
+            Left = (int)(22 * _s), Top = y5 + (int)(2 * _s), Width = (int)(1000 * _s), Height = (int)(52 * _s),
             ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
-            Text = "开启后：每个账号一次会话最多连发 " + Prefs.SessionSendLimit + " 次就换下一个；命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。关闭 = 原来的单账号模式。",
+            Text = "开启后：每个账号一次会话最多连发 " + Prefs.SessionSendLimit + " 次就换下一个账号；命中「消息发送频繁」自动冷却 "
+                 + Prefs.CooldownMinutes + " 分钟。\r\n关闭 = 原来的单账号模式（现有登录态与行为都不变）。",
         };
         c5.Controls.Add(c5note);
         var b5 = new FlowLayoutPanel
         {
-            Left = (int)(22 * _s), Top = y5 + (int)(32 * _s), Height = (int)(46 * _s),
+            Left = (int)(22 * _s), Top = y5 + (int)(60 * _s), Height = (int)(46 * _s),
             Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
         };
         b5.Controls.Add(FlatBtn("开关轮换", (s2, e2) => ToggleRotate(), true));
@@ -1256,8 +1257,7 @@ public sealed class MainForm : Form
                 }
             }
             if (_vRotate != null)
-                _vRotate.Text = (Prefs.RotateEnabled ? "已开启" : "已关闭") + " · " + AccountPool.I.SummaryText()
-                    + " · 上限 " + Prefs.SessionSendLimit + " 次/账号";
+                _vRotate.Text = (Prefs.RotateEnabled ? "已开启" : "已关闭") + " · " + AccountPool.I.SummaryText();
         }
         catch { }
     }

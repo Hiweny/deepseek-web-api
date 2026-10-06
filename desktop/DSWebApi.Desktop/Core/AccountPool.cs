@@ -17,6 +17,7 @@ public sealed class AccountSlot
     public object View;                 // Microsoft.Web.WebView2.WinForms.WebView2（避免 Core 依赖 UI 类型）
     public bool PageReady;
     public bool LoggedIn;
+    public bool Probed;
     public int SentInSession;           // 本轮会话已发送次数（达到上限就换号）
     public string SessionId = "";
     public long CooldownUntil;          // unix ms；>now 表示冷却中
@@ -40,9 +41,9 @@ public sealed class AccountSlot
         {
             if (!Enabled) return "已停用";
             if (InCooldown) return "冷却 " + FmtLeft(CooldownLeftSec);
-            if (!PageReady) return "加载中…";
-            if (!LoggedIn) return "未登录";
-            return "就绪 · 本轮已发 " + SentInSession + "/" + Prefs.SessionSendLimit;
+            if (LoggedIn) return "就绪 · 本轮已发 " + SentInSession + "/" + Prefs.SessionSendLimit;
+            if (!Probed) return "加载中…";
+            return "未登录";
         }
     }
 
@@ -306,6 +307,10 @@ public sealed class AccountPool
         var usable = all.Count(s => s.Enabled && s.LoggedIn && !s.InCooldown);
         var cooling = all.Count(s => s.Enabled && s.LoggedIn && s.InCooldown);
         var notLogin = all.Count(s => s.Enabled && !s.LoggedIn);
-        return "共 " + all.Count + " 个 · 就绪 " + usable + " · 冷却 " + cooling + " · 未登录 " + notLogin;
+        var sb = new System.Text.StringBuilder();
+        sb.Append("共 ").Append(all.Count).Append(" 个 · 就绪 ").Append(usable);
+        if (cooling > 0) sb.Append(" · 冷却 ").Append(cooling);
+        if (notLogin > 0) sb.Append(" · 未登录 ").Append(notLogin);
+        return sb.ToString();
     }
 }
