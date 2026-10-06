@@ -471,6 +471,28 @@ public sealed class MainForm : Form
         c1.Controls.Add(b1);
         inner.Controls.Add(Wrap(c1));
 
+        /* 多账号轮换 */
+        var c5 = Card("多账号轮换", 196);
+        int y5 = (int)(58 * _s);
+        _vRotate = KV(c5, "轮换状态", ref y5);
+        var c5note = new Label
+        {
+            Left = (int)(22 * _s), Top = y5 + (int)(2 * _s), Width = (int)(960 * _s), Height = (int)(24 * _s),
+            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
+            Text = "开启后：每个账号一次会话最多连发 " + Prefs.SessionSendLimit + " 次就换下一个；命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。关闭 = 原来的单账号模式。",
+        };
+        c5.Controls.Add(c5note);
+        var b5 = new FlowLayoutPanel
+        {
+            Left = (int)(22 * _s), Top = y5 + (int)(32 * _s), Height = (int)(46 * _s),
+            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
+        };
+        b5.Controls.Add(FlatBtn("开关轮换", (s2, e2) => ToggleRotate(), true));
+        b5.Controls.Add(FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive()));
+        b5.Controls.Add(FlatBtn("去对话页", (s2, e2) => { SwitchPage(1); SelectAccount(_currentAccountId); }));
+        c5.Controls.Add(b5);
+        inner.Controls.Add(Wrap(c5));
+
         /* 运行数据 */
         var c2 = Card("运行数据", 172);
         y = (int)(58 * _s);
@@ -502,27 +524,7 @@ public sealed class MainForm : Form
         c3.Controls.Add(b3b);
         inner.Controls.Add(Wrap(c3));
 
-        /* 多账号轮换 */
-        var c5 = Card("多账号轮换", 196);
-        int y5 = (int)(58 * _s);
-        _vRotate = KV(c5, "轮换状态", ref y5);
-        var c5note = new Label
-        {
-            Left = (int)(22 * _s), Top = y5 + (int)(2 * _s), Width = (int)(960 * _s), Height = (int)(24 * _s),
-            ForeColor = CSub, Font = F(10.5f), BackColor = Color.Transparent,
-            Text = "开启后：每个账号一次会话最多连发 " + Prefs.SessionSendLimit + " 次就换下一个；命中「消息发送频繁」自动冷却 " + Prefs.CooldownMinutes + " 分钟。关闭 = 原来的单账号模式。",
-        };
-        c5.Controls.Add(c5note);
-        var b5 = new FlowLayoutPanel
-        {
-            Left = (int)(22 * _s), Top = y5 + (int)(32 * _s), Height = (int)(46 * _s),
-            Width = (int)(960 * _s), BackColor = Color.Transparent, WrapContents = false,
-        };
-        b5.Controls.Add(FlatBtn("开关轮换", (s2, e2) => ToggleRotate(), true));
-        b5.Controls.Add(FlatBtn("＋ 新建账号", (s2, e2) => AddAccountInteractive()));
-        b5.Controls.Add(FlatBtn("去对话页", (s2, e2) => { SwitchPage(1); SelectAccount(_currentAccountId); }));
-        c5.Controls.Add(b5);
-        inner.Controls.Add(Wrap(c5));
+
 
         /* 客户端填写说明 */
         var c4 = Card("客户端填写（OpenAI 兼容）", 248);
