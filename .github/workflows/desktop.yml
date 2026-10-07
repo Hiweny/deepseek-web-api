@@ -52,6 +52,9 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "引擎自检失败（exit=$($p.ExitCode)）" }
           $txt = if (Test-Path $slog) { Get-Content $slog -Raw } else { "" }
           if ($txt -notmatch 'PASS\s+S bridge\.js') { throw "自检里 bridge.js 内嵌资源用例未通过（曾导致 API 全部 NO_BRIDGE）" }
+          # 工具调用参数归一化：声明为 string 的参数被写成对象时，必须转成字符串
+          if ($txt -notmatch 'PASS\s+T 声明为 string') { throw "工具参数按声明类型归一化用例未通过（string 参数不得以对象形式返回给客户端）" }
+          if ($txt -notmatch 'PASS\s+U 声明为 object') { throw "工具参数归一化的反向保护用例未通过（object 参数必须保持对象）" }
 
       # ---------- 2) 单文件发布 ----------
       - name: Publish single-file exe
@@ -178,6 +181,8 @@ jobs:
           Copy-Item "$dir\*.log" e2e-out -ErrorAction SilentlyContinue
           Copy-Item "$dir\*.png" e2e-out -ErrorAction SilentlyContinue
           if ((Test-Path $log) -and ((Get-Content $log -Raw) -match 'E2E_OK')) { Write-Host "E2E_RESULT=OK" } else { Write-Host "E2E_RESULT=FAIL" }
+          $raw = if (Test-Path $log) { Get-Content $log -Raw } else { "" }
+          if ($raw -match 'TOOLS_OK') { Write-Host "TOOLS_RESULT=OK" } elseif ($raw -match 'TOOLS_FAIL') { Write-Host "TOOLS_RESULT=FAIL" } else { Write-Host "TOOLS_RESULT=SKIP" }
 
       - name: E2E rotate (multi-account round-robin)
         if: env.E2E_ENABLED == 'true'

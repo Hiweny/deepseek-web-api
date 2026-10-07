@@ -35,6 +35,15 @@ public static class OpenAiAdapter
     /// 否则一律视为普通正文原样返回（不在正文里吞内容）。
     /// </summary>
     public static ChatResult Process(string thinkingText, string contentText, ICollection<string> allowedNames)
+        => Process(thinkingText, contentText, allowedNames, null);
+
+    /// <summary>
+    /// 增加 toolSchema：按工具声明的 JSON Schema 归一化参数
+    /// （声明为 string 的参数若被写成了对象/数组，会序列化成「只转义一层」的字符串，
+    ///   以适配宿主侧「再解析一次 JSON」的约定，见 ToolArgsFixer）。
+    /// </summary>
+    public static ChatResult Process(string thinkingText, string contentText, ICollection<string> allowedNames,
+        Dictionary<string, ToolArgsFixer.Schema> toolSchema)
     {
         var r = new ChatResult();
         r.thinking = thinkingText ?? "";
@@ -68,6 +77,7 @@ public static class OpenAiAdapter
             r.toolError = "NOT_A_TOOL_CALL";
             return r;
         }
+        ToolArgsFixer.Fix(calls, toolSchema);   // ★ 按声明类型归一化参数（string 参数不得传对象）
         r.toolCalls = calls;
         r.finishReason = "tool_calls";
         string before = content.Substring(0, s).Trim();

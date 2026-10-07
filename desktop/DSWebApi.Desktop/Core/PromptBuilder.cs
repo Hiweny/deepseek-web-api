@@ -273,6 +273,70 @@ public static class PromptBuilder
         }
     }
 
+    /// <summary>
+    /// 展开 parameters schema 为「参数清单 + 按声明类型的示例 arguments」。
+    /// 不再把 schema 原文直接当作示例值（那会让模型照着 schema 形状输出）。
+    /// </summary>
+    private static void DescribeParams(string prmsJson, out string listText, out string exampleArgs)
+    {
+        var sb = new StringBuilder();
+        var ex = new JObj();
+        JObj schema = null;
+        try { schema = Json.TryParse(prmsJson ?? "") as JObj; } catch { }
+        var props = schema?.Obj("properties");
+        var required = new HashSet<string>(StringComparer.Ordinal);
+        var reqArr = schema?.Arr("required");
+        if (reqArr != null)
+            foreach (var x in reqArr.Items)
+                if (x is JStr rs) required.Add(rs.V);
+        if (props != null)
+        {
+            foreach (string k in props.Keys)
+            {
+                var p = props.Obj(k);
+                var types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                CollectSchemaTypes(p, types);
+                string tname = types.Count == 0 ? "any" : string.Join("|", types);
+                string d = (p == null ? "" : p.Str("description", "")).Replace("\n", " ").Trim();
+                if (d.Length > 120) d = d.Substring(0, 120) + "…";
+                sb.Append("    - `").Append(k).Append("` (").Append(tname).Append(")")
+                  .Append(required.Contains(k) ? " 【必填】" : "");
+                if (d.Length > 0) sb.Append(" — ").Append(d);
+                sb.Append("\n");
+                ex.Set(k, SampleValue(types, p));
+            }
+        }
+        listText = sb.ToString();
+        exampleArgs = ex.Count > 0 ? ex.ToJson() : "{}";
+    }
+
+    private static void CollectSchemaTypes(JObj node, HashSet<string> outTypes)
+    {
+        if (node == null) return;
+        var tp = node.Get("type");
+        if (tp is JStr ts && ts.V.Trim().Length > 0) outTypes.Add(ts.V.Trim().ToLowerInvariant());
+        else if (tp is JArr ta)
+            foreach (var x in ta.Items)
+                if (x is JStr xs) outTypes.Add(xs.V.Trim().ToLowerInvariant());
+        foreach (string key in new[] { "anyOf", "oneOf", "allOf" })
+        {
+            var arr = node.Arr(key);
+            if (arr == null) continue;
+            foreach (var x in arr.Items) CollectSchemaTypes(x as JObj, outTypes);
+        }
+    }
+
+    private static JVal SampleValue(HashSet<string> types, JObj node)
+    {
+        var en = node?.Arr("enum");
+        if (en != null && en.Count > 0 && en[0] is JStr es) return new JStr(es.V);
+        if (types.Contains("boolean")) return JBool.T;
+        if (types.Contains("integer") || types.Contains("number")) return JNum.Of(0);
+        if (types.Contains("array")) return new JArr();
+        if (types.Contains("object")) return new JObj();
+        return new JStr("字符串");
+    }
+
     private static string BuildToolBlock(JArr tools, JObj req)
     {
         var sb = new StringBuilder();
@@ -290,9 +354,13 @@ public static class PromptBuilder
             string prms = fn.Str("parameters", "{}");
             string desc = fn.Str("description", "").Trim();
             sb.Append("- **").Append(name).Append("** (function):\n");
-            sb.Append("  - 调用方法: `").Append(TOOL_START).Append("[{\"name\": \"").Append(name)
-              .Append("\", \"arguments\": ").Append(prms).Append("}]").Append(TOOL_END).Append("`\n");
-            sb.Append("  - 简要说明:\n~~~markdown\n  ").Append(desc.Length == 0 ? "无描述" : desc).Append("\n~~~\n");
+            if (desc.Length > 0)
+                sb.Append("  - 说明: ").Append(desc.Replace("\n", " ").Replace("```", "[代码块]")).Append("\n");
+            DescribeParams(prms, out string plist, out string pex);
+            sb.Append("  - 参数（**必须严格按括号里声明的类型写值**）:\n");
+            sb.Append(plist.Length == 0 ? "    - 无\n" : plist);
+            sb.Append("  - 调用示例: `").Append(TOOL_START).Append("[{\"name\": \"").Append(name)
+              .Append("\", \"arguments\": ").Append(pex).Append("}]").Append(TOOL_END).Append("`\n");
         }
 
         sb.Append("\n**工具调用格式 — 请严格遵守：**\n\n");
@@ -308,7 +376,13 @@ public static class PromptBuilder
         sb.Append("7. 不要将工具调用或最终回复放进思考内容里。\n");
         sb.Append("8. `arguments` 必须是一个 **JSON 对象**，不要把它整体再写成字符串（禁止 `\"arguments\": \"{...}\"` 这种写法）。\n");
         sb.Append("9. 若某个参数值本身就是一段 JSON 文本，则该值内部的双引号只需要转义**一层**，请严格照下方示例的写法，不要漏转义、也不要多转义。\n");
-        sb.Append("10. 严禁在正文、思考、代码块或示例中原样写出工具调用标记本身。"
+        sb.Append("10. **严格按照参数声明的类型写值（非常重要）**：声明为 `string` 的参数，其值必须是**字符串**——"
+                + "如果这个字符串的内容本身是一段 JSON，请把它整段序列化成文本（内部双引号用 `\\\"` 转义一层），"
+                + "例如 `\"params\": \"{\\\"function\\\":\\\"() => 1\\\"}\"`；"
+                + "声明为 `object` / `array` 的参数才写对象 / 数组。"
+                + "严禁把声明为 `string` 的参数写成对象（宿主会对该字符串再解析一次，传对象会直接报错），"
+                + "也严禁把声明为 `object` 的参数写成字符串。\n");
+        sb.Append("11. 严禁在正文、思考、代码块或示例中原样写出工具调用标记本身。"
                 + "若需要说明格式，请用「工具调用开始标记 / 结束标记」这样的文字描述；"
                 + "正文里出现真实标记会被系统当成工具调用，导致你后面的内容被截断。\n");
         if (names.Count > 0)

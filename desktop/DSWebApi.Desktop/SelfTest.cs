@@ -96,6 +96,63 @@ internal static class SelfTest
         return true;
     }
 
+    /// <summary>构造 OpenAI tools 数组（参数 schema 用 JSON 文本给出）。</summary>
+    private static JArr ToolsOf(params (string name, string schema)[] items)
+    {
+        var arr = new JArr();
+        foreach (var it in items)
+        {
+            var t = new JObj();
+            var fn = new JObj();
+            fn.Set("name", it.name);
+            fn.Set("parameters", it.schema);
+            t.Set("function", fn);
+            arr.Add(t);
+        }
+        return arr;
+    }
+
+    /// <summary>走完整链路（带 schema）并返回第一个调用的 arguments 对象。</summary>
+    private static JObj RunFix(string innerJson, JArr tools, out string err)
+    {
+        err = "";
+        var index = ToolArgsFixer.BuildIndex(tools);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var it in tools.Items)
+        {
+            var t = it as JObj;
+            if (t == null) continue;
+            var fn = t.Obj("function") ?? t;
+            string n = fn.Str("name", "").Trim();
+            if (n.Length > 0) names.Add(n);
+        }
+        string content = OpenAiAdapter.START + innerJson + OpenAiAdapter.END;
+        var cr = OpenAiAdapter.Process("", content, names, index);
+        if (cr.toolCalls == null || cr.toolCalls.Count == 0) { err = "未识别为工具调用 toolError=" + cr.toolError; return null; }
+        var oai = OpenAiAdapter.ToOpenAiToolCalls(cr.toolCalls);
+        var fn2 = (oai[0] as JObj)?.Obj("function");
+        string argStr = fn2?.Str("arguments") ?? "";
+        var args = Json.TryParse(argStr) as JObj;
+        if (args == null) { err = "arguments 不是合法 JSON 对象: " + argStr; return null; }
+        return args;
+    }
+
+    /// <summary>宿主视角：声明为 string 的字段必须是字符串，且该字符串若像 JSON 必须严格合法。</summary>
+    private static bool HostStrOk(JObj args, string field, out string err)
+    {
+        err = "";
+        var v = args.Get(field);
+        if (!(v is JStr js)) { err = field + " 不是字符串，实际类型=" + (v == null ? "null" : v.GetType().Name); return false; }
+        string t = js.V.Trim();
+        if (t.Length >= 2 && (t[0] == '{' || t[0] == '['))
+        {
+            var inner = Json.TryParse(t);
+            if (inner == null) { err = field + " 的字符串内容不是严格合法 JSON: " + t; return false; }
+            if (!DeepWalk(inner, 0)) { err = field + " 内层还有非法 JSON: " + t; return false; }
+        }
+        return true;
+    }
+
     private static string MarkerCall(string name, string argsJson)
     {
         return OpenAiAdapter.START + "[{\"name\":\"" + name + "\",\"arguments\":" + argsJson + "}]" + OpenAiAdapter.END;
@@ -235,6 +292,7 @@ internal static class SelfTest
             bool ok = pb.toolNames.Count == 1
                       && pb.text.Contains("必须是一个 **JSON 对象**")
                       && pb.text.Contains("转义**一层**")
+                      && pb.text.Contains("严格按照参数声明的类型写值")
                       && pb.text.Contains("严禁在正文");
             Check("N 提示词规则 8/9/10 就位", ok, "len=" + pb.text.Length);
         }
@@ -269,6 +327,68 @@ internal static class SelfTest
             string doubly = Q(Q("{\"path\":\"/a\"}"));
             string p = "[{\"name\":\"read_file\",\"arguments\":" + doubly + "}]";
             Check("P 过度转义 arguments 仍还原为对象", ChainOk(p, tools, out var e7), e7);
+        }
+
+        // ★★★ 工具调用参数「按声明类型」归一化（宿主会对 string 参数再解析一次 JSON）★★★
+
+        // T) 关键修复：schema 声明 params 为 string，模型却输出了对象 → 必须归一化成字符串
+        {
+            var tl = ToolsOf(("package_proxy",
+                "{\"type\":\"object\",\"properties\":{\"tool_name\":{\"type\":\"string\"},\"params\":{\"type\":\"string\"}},\"required\":[\"tool_name\",\"params\"]}"));
+            string inner = "{\"tool_name\":\"browser:click\",\"params\":{\"function\":\"() => 1\"}}";
+            var args = RunFix(MarkerCall("package_proxy", inner), tl, out var eT);
+            bool ok = args != null && HostStrOk(args, "params", out eT) && HostStrOk(args, "tool_name", out eT)
+                      && args.Str("params").Contains("function");
+            Check("T 声明为 string 的参数被写成对象 → 归一化为字符串", ok, eT);
+        }
+
+        // U) 反向保护：schema 声明 params 为 object → 必须保持对象，绝不能被改成字符串
+        {
+            var tl = ToolsOf(("pkg",
+                "{\"type\":\"object\",\"properties\":{\"params\":{\"type\":\"object\"}}}"));
+            var args = RunFix(MarkerCall("pkg", "{\"params\":{\"a\":1}}"), tl, out var eU);
+            bool ok = args != null && args.Get("params") is JObj;
+            Check("U 声明为 object 的参数保持对象（不反向改写）", ok, eU + " 实际=" + (args?.Get("params")?.GetType().Name ?? "null"));
+        }
+
+        // V) 幂等：模型已经写成正确的一层转义字符串 → 内容原样保留
+        {
+            var tl = ToolsOf(("pkg", "{\"type\":\"object\",\"properties\":{\"params\":{\"type\":\"string\"}}}"));
+            string want = "{\"a\":1}";
+            var args = RunFix(MarkerCall("pkg", "{\"params\":" + Q(want) + "}"), tl, out var eV);
+            bool ok = args != null && HostStrOk(args, "params", out eV) && args.Str("params") == want;
+            Check("V 已正确的字符串参数保持原样（幂等）", ok, eV + " got=" + (args?.Str("params") ?? "null"));
+        }
+
+        // W) 声明为 string 且被多重转义 → 还原成严格合法的一层
+        {
+            var tl = ToolsOf(("pkg", "{\"type\":\"object\",\"properties\":{\"params\":{\"type\":\"string\"}}}"));
+            string doubly = "{\\\"a\\\":1}";                 // 内容里带着字面反斜杠（多转义了一层）
+            var args = RunFix(MarkerCall("pkg", "{\"params\":" + Q(doubly) + "}"), tl, out var eW);
+            bool ok = args != null && HostStrOk(args, "params", out eW)
+                      && (Json.TryParse(args.Str("params")) as JObj)?.Long("a") == 1;
+            Check("W 声明为 string 且被多重转义 → 还原为一层", ok, eW);
+        }
+
+        // X) 没有类型声明时一律不改写（保守，保留旧行为）
+        {
+            var tl = ToolsOf(("pkg", "{}"));
+            var args = RunFix(MarkerCall("pkg", "{\"params\":{\"a\":1}}"), tl, out var eX);
+            bool ok = args != null && args.Get("params") is JObj;
+            Check("X 无类型声明时不改写（保守）", ok, eX + " 实际=" + (args?.Get("params")?.GetType().Name ?? "null"));
+        }
+
+        // Y) 端到端形态：package_proxy 的 params 内含 JSON 文本，宿主可再解析
+        {
+            var tl = ToolsOf(("package_proxy",
+                "{\"type\":\"object\",\"properties\":{\"tool_name\":{\"type\":\"string\"},\"params\":{\"type\":\"string\"}},\"required\":[\"tool_name\",\"params\"]}"));
+            string inner = "{\"tool_name\":\"browser:navigate\",\"params\":{\"url\":\"https://a.com\",\"opts\":{\"wait\":1}}}";
+            var args = RunFix(MarkerCall("package_proxy", inner), tl, out var eY);
+            var parsed = args == null ? null : Json.TryParse(args.Str("params")) as JObj;
+            bool ok = args != null && HostStrOk(args, "params", out eY)
+                      && parsed != null && parsed.Str("url") == "https://a.com"
+                      && (parsed.Obj("opts")?.Long("wait") ?? -1) == 1;
+            Check("Y 端到端：对象参数归一化后宿主可再解析", ok, eY);
         }
 
         // S) 关键回归：bridge.js 内嵌资源必须能载入（曾因逻辑名不匹配导致 0 字节、API 全部 NO_BRIDGE）

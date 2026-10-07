@@ -235,10 +235,81 @@ internal static class E2ETest
             P("流式分片=" + chunks + " -> " + Trunc(sb.ToString(), 500));
             bool streamOk = chunks > 0;
 
-            P("---- 汇总: bridge=" + WebBridge.I.BridgeBytes + "B 登录=" + loggedIn
-              + " 非流式=" + nonStreamOk + " 流式=" + streamOk + " 截图=" + _shotPath);
+            /* ---- 工具调用专项：验证「声明为 string 的参数」不会以对象形式返回给客户端 ---- */
+            int toolsOk = -1;
+            try
+            {
+                var props = new JObj();
+                props.Set("tool_name", MakeProp("string", "要调用的工具名"));
+                props.Set("params", MakeProp("string", "该工具的参数，注意它是一段 JSON 文本"));
+                var schema = new JObj();
+                schema.Set("type", "object");
+                schema.Set("properties", props);
+                var reqd = new JArr();
+                reqd.Add(new JStr("tool_name"));
+                reqd.Add(new JStr("params"));
+                schema.Set("required", reqd);
+                var fnDef = new JObj();
+                fnDef.Set("name", "package_proxy");
+                fnDef.Set("description", "代理调用某个工具，params 是该工具参数的 JSON 文本");
+                fnDef.Set("parameters", schema);
+                var oneTool = new JObj();
+                oneTool.Set("type", "function");
+                oneTool.Set("function", fnDef);
+                var toolsArr = new JArr();
+                toolsArr.Add(oneTool);
 
-            if (loggedIn && nonStreamOk && streamOk) { P("E2E_OK"); return 0; }
+                var um = new JObj();
+                um.Set("role", "user");
+                um.Set("content", "请调用工具 package_proxy：tool_name 用 browser:navigate，params 里给出 url=https://example.com 。只输出工具调用本身。");
+                var msgs2 = new JArr();
+                msgs2.Add(um);
+                var bodyObj = new JObj();
+                bodyObj.Set("model", "deepseek");
+                bodyObj.Set("messages", msgs2);
+                bodyObj.Set("stream", false);
+                bodyObj.Set("tool_choice", "required");
+                bodyObj.Set("tools", toolsArr);
+
+                P("工具定义(package_proxy): tool_name:string, params:string → " + Trunc(toolsArr.ToJson(), 400));
+                var rt = new HttpRequestMessage(HttpMethod.Post, url);
+                rt.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Prefs.ApiKey);
+                rt.Content = new StringContent(bodyObj.ToJson(), Encoding.UTF8, "application/json");
+                var rr = await http.SendAsync(rt);
+                string respT = await rr.Content.ReadAsStringAsync();
+                P("工具调用 HTTP " + (int)rr.StatusCode + " -> " + Trunc(respT, 1400));
+
+                var ro = Json.TryParse(respT) as JObj;
+                var msgT = (ro?.Arr("choices")?[0] as JObj)?.Obj("message");
+                var tcs = msgT?.Arr("tool_calls");
+                if (tcs != null && tcs.Count > 0)
+                {
+                    var fnR = (tcs[0] as JObj)?.Obj("function");
+                    string argStr = fnR?.Str("arguments", "");
+                    var argv = Json.TryParse(argStr) as JObj;
+                    var pv = argv?.Get("params");
+                    bool isStr = pv is JStr;
+                    bool innerOk = pv is JStr ps && Json.TryParse(ps.V) != null;
+                    bool tnStr = argv?.Get("tool_name") is JStr;
+                    toolsOk = (isStr && innerOk && tnStr) ? 1 : 0;
+                    P("工具调用参数 → params 实际类型=" + (pv == null ? "null" : pv.GetType().Name)
+                      + " · 声明为 string 且是字符串=" + isStr + " · 其内容可再解析=" + innerOk
+                      + " · tool_name 是字符串=" + tnStr);
+                    P("客户端实际收到的 arguments = " + Trunc(argStr, 400));
+                }
+                else
+                {
+                    P("模型未返回 tool_calls（视为未触发，跳过判定）；正文=" + Trunc(msgT?.Str("content"), 300));
+                }
+            }
+            catch (Exception ex) { P("工具调用用例异常: " + ex.Message); }
+            P(toolsOk == 1 ? "TOOLS_OK" : (toolsOk == 0 ? "TOOLS_FAIL" : "TOOLS_SKIP"));
+
+            P("---- 汇总: bridge=" + WebBridge.I.BridgeBytes + "B 登录=" + loggedIn
+              + " 非流式=" + nonStreamOk + " 流式=" + streamOk
+              + " 工具调用=" + (toolsOk == 1 ? "OK" : toolsOk == 0 ? "FAIL" : "未触发") + " 截图=" + _shotPath);
+
+            if (loggedIn && nonStreamOk && streamOk && toolsOk != 0) { P("E2E_OK"); return 0; }
             P("E2E_FAIL");
             return 5;
         }
@@ -246,6 +317,14 @@ internal static class E2ETest
         private sealed class EngineForwarder : WebBridge.IStatusListener
         {
             public void OnStatus(string json) { try { ChatEngine.I.OnStatus(json); } catch { } }
+        }
+
+        private static JObj MakeProp(string type, string desc)
+        {
+            var o = new JObj();
+            o.Set("type", type);
+            o.Set("description", desc);
+            return o;
         }
 
         private async Task<string> Eval(string js)

@@ -520,6 +520,8 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         catch (Exception e) { res.SendJson(400, ErrJson("Bad request: " + e.Message, "invalid_request_error")); return; }
 
         if (pb.toolNames.Count > 0) _lastToolNames = new HashSet<string>(pb.toolNames, StringComparer.OrdinalIgnoreCase);
+        // 工具声明的 JSON Schema（用于按类型归一化参数：声明为 string 的参数不能传对象/数组）
+        var toolSchema = ToolArgsFixer.BuildIndex(body.Arr("tools"));
         var toolNames = pb.toolNames.Count > 0 ? new HashSet<string>(pb.toolNames, StringComparer.OrdinalIgnoreCase) : _lastToolNames;
 
         if (pb.text.Trim().Length == 0 && pb.attachments.Count == 0)
@@ -570,8 +572,8 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                     var r = wb.AttachFile(a.Name, a.Mime, a.Base64, 150);
                     if (!r.Bool("ok")) Log.Write("附件挂载失败: " + a.Name + " " + r.Str("error"));
                 }
-                if (stream) RunStream(model, pb, res, toolNames, wb, slot);
-                else RunBlocking(model, pb, res, toolNames, wb, slot);
+                if (stream) RunStream(model, pb, res, toolNames, wb, slot, toolSchema);
+                else RunBlocking(model, pb, res, toolNames, wb, slot, toolSchema);
                 if (slot != null)
                 {
                     slotDone = true;
@@ -603,7 +605,8 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         });
     }
 
-    private void RunBlocking(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb, AccountSlot slot)
+    private void RunBlocking(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb, AccountSlot slot,
+        Dictionary<string, ToolArgsFixer.Schema> toolSchema)
     {
         int timeout = Prefs.TimeoutSec;
         var r = wb.SendPrompt(pb.text, null, timeout);
@@ -634,7 +637,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
             _lastCallInfo = "失败: " + err;
             return;
         }
-        var cr = OpenAiAdapter.Process(thinking, content, toolNames);
+        var cr = OpenAiAdapter.Process(thinking, content, toolNames, toolSchema);
         string id = OpenAiAdapter.NewId();
         long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var outObj = OpenAiAdapter.BuildCompletion(id, model, created, cr.thinking, cr.content, cr.toolCalls,
@@ -650,7 +653,8 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
 
     private const int HOLD = 32;
 
-    private void RunStream(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb, AccountSlot slot)
+    private void RunStream(string model, PromptBuilder.Result pb, HttpServer.Response res, HashSet<string> toolNames, WebBridge wb, AccountSlot slot,
+        Dictionary<string, ToolArgsFixer.Schema> toolSchema)
     {
         int timeout = Prefs.TimeoutSec;
         string id = OpenAiAdapter.NewId();
@@ -733,7 +737,7 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                             _lastCallInfo = "失败: " + r.Str("error");
                             return;
                         }
-                        var cr = OpenAiAdapter.Process(r.Str("thinking"), content, toolNames);
+                        var cr = OpenAiAdapter.Process(r.Str("thinking"), content, toolNames, toolSchema);
                         if (cr.toolCalls != null && cr.toolCalls.Count > 0)
                         {
                             var tcs = OpenAiAdapter.ToOpenAiToolCalls(cr.toolCalls);
