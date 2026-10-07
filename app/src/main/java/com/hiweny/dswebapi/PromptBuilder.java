@@ -4,7 +4,11 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 把 OpenAI Chat Completions 请求转换为「注入到官网输入框」的文本，并提取附件。
@@ -238,6 +242,87 @@ public final class PromptBuilder {
         }
     }
 
+    /**
+     * 展开 parameters schema 为「参数清单 + 按声明类型的示例 arguments」。
+     * 不再把 schema 原文直接当作示例值（那会让模型照着 schema 形状输出）。
+     */
+    private static String[] describeParams(String prmsJson) {
+        StringBuilder sb = new StringBuilder();
+        JSONObject ex = new JSONObject();
+        JSONObject schema = null;
+        if (prmsJson != null && !prmsJson.trim().isEmpty()) {
+            try { schema = new JSONObject(prmsJson); } catch (Exception ignored) { }
+            if (schema == null) {
+                Object v = LooseJson.parse(prmsJson);
+                if (v instanceof JSONObject) schema = (JSONObject) v;
+            }
+        }
+        JSONObject props = schema == null ? null : schema.optJSONObject("properties");
+        Set<String> required = new HashSet<>();
+        JSONArray reqArr = schema == null ? null : schema.optJSONArray("required");
+        if (reqArr != null) {
+            for (int i = 0; i < reqArr.length(); i++) {
+                String s = reqArr.optString(i, "");
+                if (!s.isEmpty()) required.add(s);
+            }
+        }
+        if (props != null) {
+            for (Iterator<String> it = props.keys(); it.hasNext(); ) {
+                String k = it.next();
+                JSONObject p = props.optJSONObject(k);
+                Set<String> types = new HashSet<>();
+                collectSchemaTypes(p, types);
+                String d = p == null ? "" : p.optString("description", "").replace("\n", " ").trim();
+                if (d.length() > 120) d = d.substring(0, 120) + "…";
+                sb.append("    - `").append(k).append("` (").append(types.isEmpty() ? "any" : joinTypes(types)).append(")")
+                  .append(required.contains(k) ? " 【必填】" : "");
+                if (!d.isEmpty()) sb.append(" — ").append(d);
+                sb.append("\n");
+                try { ex.put(k, sampleValue(types, p)); } catch (Exception ignored) { }
+            }
+        }
+        return new String[]{sb.toString(), ex.length() > 0 ? ex.toString() : "{}"};
+    }
+
+    private static String joinTypes(Set<String> types) {
+        StringBuilder b = new StringBuilder();
+        for (String t : types) {
+            if (b.length() > 0) b.append("|");
+            b.append(t);
+        }
+        return b.toString();
+    }
+
+    private static void collectSchemaTypes(JSONObject node, Set<String> out) {
+        if (node == null) return;
+        Object tp = node.opt("type");
+        if (tp instanceof String) {
+            String s = ((String) tp).trim();
+            if (!s.isEmpty()) out.add(s.toLowerCase(Locale.ROOT));
+        } else if (tp instanceof JSONArray) {
+            JSONArray ta = (JSONArray) tp;
+            for (int i = 0; i < ta.length(); i++) {
+                Object x = ta.opt(i);
+                if (x instanceof String) out.add(((String) x).trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        for (String key : new String[]{"anyOf", "oneOf", "allOf"}) {
+            JSONArray arr = node.optJSONArray(key);
+            if (arr == null) continue;
+            for (int i = 0; i < arr.length(); i++) collectSchemaTypes(arr.optJSONObject(i), out);
+        }
+    }
+
+    private static Object sampleValue(Set<String> types, JSONObject node) {
+        JSONArray en = node == null ? null : node.optJSONArray("enum");
+        if (en != null && en.length() > 0) return en.opt(0);
+        if (types.contains("boolean")) return Boolean.TRUE;
+        if (types.contains("integer") || types.contains("number")) return 0;
+        if (types.contains("array")) return new JSONArray();
+        if (types.contains("object")) return new JSONObject();
+        return "字符串";
+    }
+
     private static String buildToolBlock(JSONArray tools, JSONObject req) {
         StringBuilder sb = new StringBuilder();
         sb.append("你可以使用以下工具：\n");
@@ -253,9 +338,14 @@ public final class PromptBuilder {
             String params = fn.optString("parameters", "{}");
             String desc = fn.optString("description", "").trim();
             sb.append("- **").append(name).append("** (function):\n");
-            sb.append("  - 调用方法: `").append(TOOL_START).append("[{\"name\": \"").append(name)
-              .append("\", \"arguments\": ").append(params).append("}]").append(TOOL_END).append("`\n");
-            sb.append("  - 简要说明:\n~~~markdown\n  ").append(desc.isEmpty() ? "无描述" : desc).append("\n~~~\n");
+            if (!desc.isEmpty()) {
+                sb.append("  - 说明: ").append(desc.replace("\n", " ").replace("```", "[代码块]")).append("\n");
+            }
+            String[] dp = describeParams(params);
+            sb.append("  - 参数（**必须严格按括号里声明的类型写值**）:\n");
+            sb.append(dp[0].isEmpty() ? "    - 无\n" : dp[0]);
+            sb.append("  - 调用示例: `").append(TOOL_START).append("[{\"name\": \"").append(name)
+              .append("\", \"arguments\": ").append(dp[1]).append("}]").append(TOOL_END).append("`\n");
         }
 
         sb.append("\n**工具调用格式 — 请严格遵守：**\n\n");
@@ -271,7 +361,13 @@ public final class PromptBuilder {
         sb.append("7. 不要将工具调用或最终回复放进思考内容里。\n");
         sb.append("8. `arguments` 必须是一个 **JSON 对象**，不要把它整体再写成字符串（禁止 `\"arguments\": \"{...}\"` 这种写法）。\n");
         sb.append("9. 若某个参数值本身就是一段 JSON 文本，则该值内部的双引号只需要转义**一层**，请严格照下方示例的写法，不要漏转义、也不要多转义。\n");
-        sb.append("10. 严禁在正文、思考、代码块或示例中原样写出工具调用标记本身。"
+        sb.append("10. **严格按照参数声明的类型写值（非常重要）**：声明为 `string` 的参数，其值必须是**字符串**——"
+                + "如果这个字符串的内容本身是一段 JSON，请把它整段序列化成文本（内部双引号用 `\\\"` 转义一层），"
+                + "例如 `\"params\": \"{\\\"function\\\":\\\"() => 1\\\"}\"`；"
+                + "声明为 `object` / `array` 的参数才写对象 / 数组。"
+                + "严禁把声明为 `string` 的参数写成对象（宿主会对该字符串再解析一次，传对象会直接报错），"
+                + "也严禁把声明为 `object` 的参数写成字符串。\n");
+        sb.append("11. 严禁在正文、思考、代码块或示例中原样写出工具调用标记本身。"
                 + "若需要说明格式，请用「工具调用开始标记 / 结束标记」这样的文字描述；"
                 + "正文里出现真实标记会被系统当成工具调用，导致你后面的内容被截断。\n");
         if (!names.isEmpty()) {

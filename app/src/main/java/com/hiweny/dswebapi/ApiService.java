@@ -359,6 +359,8 @@ public class ApiService extends Service {
 
         if (!pb.toolNames.isEmpty()) sLastToolNames = new java.util.LinkedHashSet<>(pb.toolNames);
         final java.util.Set<String> toolNames = pb.toolNames.isEmpty() ? sLastToolNames : new java.util.LinkedHashSet<>(pb.toolNames);
+        // 工具声明的 JSON Schema：用于按类型归一化参数（声明为 string 的参数不得传对象/数组）
+        final JSONArray toolDefs = body.optJSONArray("tools");
 
         if (pb.text.trim().isEmpty() && pb.attachments.isEmpty()) {
             try { res.sendJson(400, errJson("messages 为空", "invalid_request_error")); } catch (Exception ignored) {}
@@ -386,8 +388,8 @@ public class ApiService extends Service {
                     JSONObject r = DeepSeekController.get().attachFile(a.name, a.mime, a.base64, 150);
                     if (!r.optBoolean("ok")) Util.log("附件挂载失败: " + a.name + " " + r.optString("error"));
                 }
-                if (stream) runStream(model, pb, res, toolNames);
-                else runBlocking(model, pb, res, toolNames);
+                if (stream) runStream(model, pb, res, toolNames, toolDefs);
+                else runBlocking(model, pb, res, toolNames, toolDefs);
                 long cost = System.currentTimeMillis() - t0;
                 okCalls.incrementAndGet();
                 lastCallInfo = "成功 · " + (cost / 1000.0) + "s · " + (pb.attachments.size() > 0 ? pb.attachments.size() + "附件 · " : "");
@@ -404,7 +406,7 @@ public class ApiService extends Service {
     }
 
     private void runBlocking(String model, PromptBuilder.Result pb, HttpBridgeServer.Response res,
-                             java.util.Set<String> toolNames) throws Exception {
+                             java.util.Set<String> toolNames, JSONArray toolDefs) throws Exception {
         int timeout = Util.prefs(this).getInt("timeout", 300);
         JSONObject r = DeepSeekController.get().sendPrompt(pb.text, null, timeout);
         String thinking = r.optString("thinking");
@@ -415,7 +417,7 @@ public class ApiService extends Service {
             lastCallInfo = "失败: " + err;
             return;
         }
-        OpenAiAdapter.ChatResult cr = OpenAiAdapter.process(thinking, content, toolNames);
+        OpenAiAdapter.ChatResult cr = OpenAiAdapter.process(thinking, content, toolNames, toolDefs);
         String id = OpenAiAdapter.newId();
         long created = System.currentTimeMillis() / 1000;
         JSONObject out = OpenAiAdapter.buildCompletion(id, model, created, cr.thinking, cr.content, cr.toolCalls,
@@ -430,7 +432,7 @@ public class ApiService extends Service {
 
     private static final int HOLD = 32;
 
-    private void runStream(String model, PromptBuilder.Result pb, HttpBridgeServer.Response res, final java.util.Set<String> toolNames) {
+    private void runStream(String model, PromptBuilder.Result pb, HttpBridgeServer.Response res, final java.util.Set<String> toolNames, final JSONArray toolDefs) {
         int timeout = Util.prefs(this).getInt("timeout", 300);
         final String id = OpenAiAdapter.newId();
         final long created = System.currentTimeMillis() / 1000;
@@ -498,7 +500,7 @@ public class ApiService extends Service {
                             lastCallInfo = "失败: " + r.optString("error");
                             return;
                         }
-                        OpenAiAdapter.ChatResult cr = OpenAiAdapter.process(r.optString("thinking"), content, toolNames);
+                        OpenAiAdapter.ChatResult cr = OpenAiAdapter.process(r.optString("thinking"), content, toolNames, toolDefs);
                         if (cr.toolCalls != null && cr.toolCalls.length() > 0) {
                             // 工具调用：content 中标签之前若还有未下发正文，先补发
                             String before = cr.content;

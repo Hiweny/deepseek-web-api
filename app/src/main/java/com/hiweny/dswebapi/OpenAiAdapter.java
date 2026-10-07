@@ -46,6 +46,20 @@ public final class OpenAiAdapter {
      * @param allowedNames 本次请求声明的工具名集合，可为 null（表示不校验名字）
      */
     public static ChatResult process(String thinkingText, String contentText, java.util.Set<String> allowedNames) {
+        return process(thinkingText, contentText, allowedNames, null);
+    }
+
+    /**
+     * 增加 tools：按工具声明的 JSON Schema 归一化参数。
+     *
+     * <p>声明为 string 的参数，如果模型写成了对象/数组，会序列化成「只转义一层」的字符串，
+     * 以适配宿主侧「再解析一次 JSON」的约定（见 {@link ToolArgsFixer}）；
+     * 声明为 object/array 的参数保持原样，不会被反向改写。
+     *
+     * @param tools 本次请求声明的工具定义（可为 null）
+     */
+    public static ChatResult process(String thinkingText, String contentText, java.util.Set<String> allowedNames,
+                                     JSONArray tools) {
         ChatResult r = new ChatResult();
         r.thinking = thinkingText == null ? "" : thinkingText;
         String content = contentText == null ? "" : contentText;
@@ -71,6 +85,7 @@ public final class OpenAiAdapter {
             r.toolError = "NOT_A_TOOL_CALL";
             return r;
         }
+        ToolArgsFixer.fix(calls, tools);   // ★ 按声明类型归一化参数（string 参数不得传对象）
         r.toolCalls = calls;
         r.finishReason = "tool_calls";
         // 工具调用之外若还有正文（少数情况），保留

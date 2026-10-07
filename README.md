@@ -90,6 +90,11 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 > APK 的 HTTP 服务仅监听 `127.0.0.1`，只能被**同一台手机**上的 App 调用。
 
+### 工具调用参数（与桌面版一致）
+从 v1.0.6 起，APK 也会按**工具声明的 JSON Schema** 归一化参数：
+声明为 `string` 的参数如果被模型写成了对象/数组，会自动序列化成「只转义一层」的 JSON 字符串
+（宿主要求这类字段是字符串，否则会报 `Exactly one params parameter is required`）；声明为 `object`/`array` 的参数保持不动。
+
 ### 界面
 底部导航双页面：**控制台**（服务状态、地址与密钥、调用统计、设置）/ **对话页**（DeepSeek 官网 WebView）。
 全局深色模式，官网页面自动跟随系统主题。
