@@ -63,36 +63,80 @@ public final class OpenAiAdapter {
         ChatResult r = new ChatResult();
         r.thinking = thinkingText == null ? "" : thinkingText;
         String content = contentText == null ? "" : contentText;
+        if (content.isEmpty()) return r;
 
-        String norm = normTag(content);
-        int s = norm.indexOf(START_NORM);
-        if (s < 0) { r.content = content; return r; }
-        int e = norm.indexOf(END_NORM, s + START_NORM.length());
-        String inner;
-        int after;
-        if (e < 0) {
-            inner = content.substring(s + START_NORM.length());
-            after = content.length();
-        } else {
-            inner = content.substring(s + START_NORM.length(), e);
-            after = e + END_NORM.length();
+        // ① 用**宽容正则**扫描所有工具块（覆盖竖线半角/全角、分隔符 _/▁/空格、大小写等变体，
+        //    以及只有 begin 没有 end 的截断块）。旧实现用精确 indexOf，只认一种形态，
+        //    变体与残片会整段落进正文 —— 这就是「工具标记漏进正文」的根因。
+        java.util.List<int[]> ranges = new java.util.ArrayList<int[]>();
+        java.util.List<String> inners = new java.util.ArrayList<String>();
+        int pos = 0;
+        while (pos < content.length()) {
+            java.util.regex.Matcher mb = ToolMarkup.BEGIN.matcher(content);
+            if (!mb.find(pos)) break;
+            int start = mb.start();
+            int afterBegin = mb.end();
+            java.util.regex.Matcher me = ToolMarkup.END.matcher(content);
+            int endEx;
+            String inner;
+            if (me.find(afterBegin)) { endEx = me.end(); inner = content.substring(afterBegin, me.start()); }
+            else { endEx = content.length(); inner = content.substring(afterBegin); }
+            ranges.add(new int[]{start, endEx});
+            inners.add(inner);
+            pos = endEx;
         }
-        JSONArray calls = filterCalls(parseToolCalls(inner), allowedNames);
-        if (calls == null || calls.length() == 0) {
-            // 不是有效工具调用（例如模型只是在正文里描述/举例这个标记）：
-            // 原样保留整段文本，绝不吞掉正文内容。
-            r.content = content;
-            r.toolError = "NOT_A_TOOL_CALL";
+
+        boolean hasList = allowedNames != null && !allowedNames.isEmpty();
+        JSONArray calls = new JSONArray();
+        for (int i = 0; i < inners.size(); i++) {
+            JSONArray parsed = filterCalls(parseToolCalls(inners.get(i)), allowedNames);
+            // 没有声明工具列表时无法按名字甄别：代码块里的「示例」一律按正文处理
+            if (!hasList && inCodeFence(content, ranges.get(i)[0])) parsed = null;
+            if (parsed != null) {
+                for (int k = 0; k < parsed.length(); k++) calls.put(parsed.opt(k));
+            }
+        }
+
+        if (calls.length() == 0) {
+            // 没有有效调用（模型在正文里描述/举例，或调用块被写坏）：正文语义照常保留，
+            // 但**标记残片绝不许上屏** —— 这是修「工具标记漏进正文」的关键一步。
+            r.content = ToolMarkup.stripStray(content);
+            if (!ranges.isEmpty() || ToolMarkup.earliestSignal(content) >= 0) r.toolError = "NOT_A_TOOL_CALL";
             return r;
         }
+
+        // ② 有有效调用：把所有块从正文里摘掉，块间/块后的正文保留
+        String rest = removeRanges(content, ranges);
+        r.content = ToolMarkup.stripStray(rest).trim();
         ToolArgsFixer.fix(calls, tools);   // ★ 按声明类型归一化参数（string 参数不得传对象）
         r.toolCalls = calls;
         r.finishReason = "tool_calls";
-        // 工具调用之外若还有正文（少数情况），保留
-        String before = content.substring(0, s).trim();
-        String rest = after < content.length() ? content.substring(after).trim() : "";
-        r.content = (before + (rest.isEmpty() ? "" : "\n" + rest)).trim();
         return r;
+    }
+
+    /** 从文本里移除若干 [start, end) 区间，拼接剩余部分。 */
+    private static String removeRanges(String text, java.util.List<int[]> ranges) {
+        if (ranges.isEmpty()) return text;
+        StringBuilder sb = new StringBuilder();
+        int cur = 0;
+        for (int[] rg : ranges) {
+            int s0 = rg[0], e0 = rg[1];
+            if (s0 > cur) sb.append(text, cur, s0);
+            if (e0 > cur) cur = e0;
+        }
+        if (cur < text.length()) sb.append(text, cur, text.length());
+        return sb.toString();
+    }
+
+    /** 索引处是否位于 markdown 代码围栏（```）内部。 */
+    private static boolean inCodeFence(String content, int idx) {
+        int count = 0, i = -1;
+        while (true) {
+            i = content.indexOf("```", i + 1);
+            if (i < 0 || i >= idx) break;
+            count++;
+        }
+        return (count % 2) == 1;
     }
 
     /**

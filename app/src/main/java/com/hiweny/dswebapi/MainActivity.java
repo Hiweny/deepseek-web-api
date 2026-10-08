@@ -515,8 +515,8 @@ public class MainActivity extends Activity {
             case "port": return sp.getInt("port", 8787);
             case "apikey": return sp.getString("api_key", "sk-deepseek");
             case "timeout": return sp.getInt("timeout", 300);
-            case "thinking_mode": return sp.getString("thinking_mode", "auto");
-            case "search_mode": return sp.getString("search_mode", "auto");
+            case "thinking_mode": return sp.getString("thinking_mode", "on");
+            case "search_mode": return sp.getString("search_mode", "off");
             case "context_tokens": return sp.getInt("context_tokens", 1000000);
             case "newchat_threshold": return sp.getInt("newchat_threshold", 70);
         }

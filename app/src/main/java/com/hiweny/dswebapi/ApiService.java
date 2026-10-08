@@ -368,8 +368,8 @@ public class ApiService extends Service {
         }
 
         // 思考/搜索策略
-        String thinking = Util.prefs(this).getString("thinking_mode", "auto");
-        String search = Util.prefs(this).getString("search_mode", "auto");
+        String thinking = Util.prefs(this).getString("thinking_mode", "on");
+        String search = Util.prefs(this).getString("search_mode", "off");
         String re = body.optString("reasoning_effort", "");
         if ("none".equalsIgnoreCase(re)) thinking = "off";
         else if (!re.isEmpty()) thinking = "on";
@@ -464,21 +464,14 @@ public class ApiService extends Service {
                         }
                         if (toolMode[0]) { /* 工具块，静默缓冲，结束时统一下发 */ }
                         else {
-                            String norm = OpenAiAdapter.normTag(ct);
-                            int si = norm.indexOf("<|tool_calls_begin|>");
-                            if (si >= 0) {
-                                if (si > emitted[0]) {
-                                    writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", ct.substring(emitted[0], si)), null));
-                                }
-                                emitted[0] = si;
-                                toolMode[0] = true;
-                            } else {
-                                int safe = ct.length() - HOLD;
-                                if (safe > emitted[0]) {
-                                    writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", ct.substring(emitted[0], safe)), null));
-                                    emitted[0] = safe;
-                                }
+                            // 只要出现工具标记信号（宽窄变体、孤立残片都算），就停在标记之前，
+                            // 绝不让标记或残片上屏（旧实现只认精确 <|tool_calls_begin|>）。
+                            int safe = ToolMarkup.safeEmitEnd(ct, HOLD);
+                            if (safe > emitted[0]) {
+                                writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", ct.substring(emitted[0], safe)), null));
+                                emitted[0] = safe;
                             }
+                            if (ToolMarkup.earliestSignal(ct) >= 0) toolMode[0] = true;
                         }
                     } catch (Exception ignored) {}
                 }
@@ -523,16 +516,14 @@ public class ApiService extends Service {
                             writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, emptyDelta(), "tool_calls"));
                             lastCallInfo = "成功 · 工具调用 x" + tcs.length();
                         } else {
-                            if (toolMode[0]) {
-                                // 出现过标记但并非有效工具调用（例如正文里在解释/举例这个标记）：
-                                // 把这段原文补发出去，绝不吞掉正文内容。
-                                if (content.length() > emitted[0]) {
-                                    writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", content.substring(emitted[0])), null));
-                                }
-                                Util.log("检测到标记但非有效工具调用，已按正文输出");
-                            } else if (content.length() > emitted[0]) {
-                                writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", content.substring(emitted[0])), null));
+                            // 非有效工具调用：补发剩余正文。**必须先剥掉标记残片**，
+                            // 否则「静默期之后」的残片会在这里逃逸成正文。
+                            String tailText = content.length() > emitted[0] ? content.substring(emitted[0]) : "";
+                            tailText = ToolMarkup.stripStray(tailText);
+                            if (!tailText.isEmpty()) {
+                                writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, delta("content", tailText), null));
                             }
+                            if (toolMode[0]) Util.log("检测到标记但非有效工具调用，已按正文输出（残片已剥离）");
                             writeChunk(res, lock, OpenAiAdapter.chunk(id, model, created, emptyDelta(), "stop"));
                             lastCallInfo = "成功 · " + content.length() + "字" + (r.optBoolean("recalled") ? " · 防撤回" : "");
                         }
