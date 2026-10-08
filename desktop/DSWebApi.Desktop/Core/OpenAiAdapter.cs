@@ -1,3 +1,4 @@
+﻿using System.Text;
 using System.Text.RegularExpressions;
 
 namespace DSWebApi.Desktop.Core;
@@ -48,42 +49,73 @@ public static class OpenAiAdapter
         var r = new ChatResult();
         r.thinking = thinkingText ?? "";
         string content = contentText ?? "";
+        if (content.Length == 0) return r;
 
-        string norm = NormTag(content);
-        int s = norm.IndexOf(START_NORM, StringComparison.Ordinal);
-        if (s < 0) { r.content = content; return r; }
-        int e = norm.IndexOf(END_NORM, s + START_NORM.Length, StringComparison.Ordinal);
-        string inner;
-        int after;
-        if (e < 0)
+        // ① 用**宽容正则**扫描所有工具块（覆盖竖线半角/全角、分隔符 _/▁/空格、大小写等变体，
+        //    以及只有 begin 没有 end 的截断块）。旧实现用 NormTag + 精确 IndexOf，只认一种形态，
+        //    变体与残片会整段落进正文 —— 这正是「工具标记漏进正文」的根因。
+        var ranges = new List<int[]>();
+        var inners = new List<string>();
+        int pos = 0;
+        while (pos < content.Length)
         {
-            inner = content.Substring(s + START_NORM.Length);
-            after = content.Length;
+            var mb = ToolMarkup.BeginRe.Match(content, pos);
+            if (!mb.Success) break;
+            int start = mb.Index;
+            int afterBegin = mb.Index + mb.Length;
+            var me = ToolMarkup.EndRe.Match(content, afterBegin);
+            int endEx; string inner;
+            if (me.Success) { endEx = me.Index + me.Length; inner = content.Substring(afterBegin, me.Index - afterBegin); }
+            else { endEx = content.Length; inner = content.Substring(afterBegin); }
+            ranges.Add(new[] { start, endEx });
+            inners.Add(inner);
+            pos = endEx;
         }
-        else
-        {
-            inner = content.Substring(s + START_NORM.Length, e - (s + START_NORM.Length));
-            after = e + END_NORM.Length;
-        }
-        JArr calls = FilterCalls(ParseToolCalls(inner), allowedNames);
-        // 没有声明工具列表时无法按名字甄别：若这段标记是写在 markdown 代码块里的「示例」，
-        // 一律按正文处理（正常调用不会被包在代码块里——提示词规则 5 已明确禁止）。
+
         bool hasList = allowedNames != null && allowedNames.Count > 0;
-        if (!hasList && InCodeFence(content, s)) calls = null;
-        if (calls == null || calls.Count == 0)
+        var calls = new JArr();
+        for (int i = 0; i < inners.Count; i++)
         {
-            // 不是有效工具调用（例如模型只是在正文里描述/举例这个标记）：原样保留整段文本
-            r.content = content;
-            r.toolError = "NOT_A_TOOL_CALL";
+            var parsed = FilterCalls(ParseToolCalls(inners[i]), allowedNames);
+            // 没有声明工具列表时无法按名字甄别：代码块里的「示例」一律按正文处理
+            // （正常调用不会被包在代码块里——提示词规则 5 已明确禁止）。
+            if (!hasList && InCodeFence(content, ranges[i][0])) parsed = null;
+            if (parsed != null && parsed.Count > 0)
+                for (int k = 0; k < parsed.Count; k++) calls.Add(parsed[k]);
+        }
+
+        if (calls.Count == 0)
+        {
+            // 没有有效调用（模型在正文里描述/举例，或调用块被写坏）：正文语义照常保留，
+            // 但**标记残片绝不许上屏** —— 这是修「工具标记漏进正文」的关键一步。
+            r.content = ToolMarkup.StripStray(content);
+            if (ranges.Count > 0 || ToolMarkup.EarliestSignal(content) >= 0) r.toolError = "NOT_A_TOOL_CALL";
             return r;
         }
+
+        // ② 有有效调用：把所有块从正文里摘掉，块间/块后的正文保留
+        string rest = RemoveRanges(content, ranges);
+        r.content = ToolMarkup.StripStray(rest).Trim();
         ToolArgsFixer.Fix(calls, toolSchema);   // ★ 按声明类型归一化参数（string 参数不得传对象）
         r.toolCalls = calls;
         r.finishReason = "tool_calls";
-        string before = content.Substring(0, s).Trim();
-        string rest = after < content.Length ? content.Substring(after).Trim() : "";
-        r.content = (before + (rest.Length == 0 ? "" : "\n" + rest)).Trim();
         return r;
+    }
+
+    /// <summary>从文本里移除若干 [start, end) 区间，拼接剩余部分。</summary>
+    private static string RemoveRanges(string text, List<int[]> ranges)
+    {
+        if (ranges.Count == 0) return text;
+        var sb = new StringBuilder();
+        int cur = 0;
+        foreach (var rg in ranges)
+        {
+            int s0 = rg[0], e0 = rg[1];
+            if (s0 > cur) sb.Append(text, cur, s0 - cur);
+            if (e0 > cur) cur = e0;
+        }
+        if (cur < text.Length) sb.Append(text, cur, text.Length - cur);
+        return sb.ToString();
     }
 
     /// <summary>只保留「结构完整（有 name）」且「名字确实在本次声明的工具列表里」的调用。</summary>

@@ -1,4 +1,4 @@
-/* ============================================================
+﻿/* ============================================================
  * DeepSeek Web API · 注入桥接脚本
  * 运行于 chat.deepseek.com 页面上下文（WebView 注入）
  *
@@ -314,11 +314,13 @@
     if (isCompletionUrl(url) && typeof body === 'string') {
       try {
         var j = JSON.parse(body);
-        if (opts.thinking === 'on') j.thinking_enabled = true;
-        else if (opts.thinking === 'off') j.thinking_enabled = false;
-        if (opts.search === 'on') j.search_enabled = true;
-        else if (opts.search === 'off') j.search_enabled = false;
+        // 思考：默认开（'auto' 也当开），只有显式 'off' 才关。
+        j.thinking_enabled = (opts.thinking !== 'off');
+        // 联网搜索：默认关 —— 网页自带的联网搜索会让模型把自己的搜索结果
+        // 与外部工具结果混淆；只有显式 'on' 才开。
+        j.search_enabled = (opts.search === 'on');
         effBody = JSON.stringify(j);
+        log('inject body: thinking_enabled=' + j.thinking_enabled + ' search_enabled=' + j.search_enabled);
       } catch (e) {}
       try { hookPageCompletion(xhr, effBody); } catch (e) { log('hook fail: ' + e.message); }
     } else if (isHistoryUrl(url)) {
@@ -623,6 +625,7 @@
 
   /* ================= 主流程：填入 + 发送 ================= */
   function domSend(o) {
+    try { applyToggles(); } catch (e) {}
     var input = findInput();
     if (!input) { emit({ type: 'reply', reqId: o.reqId, ok: false, via: 'dom', content: '', error: 'NO_INPUT', sessionId: '' }); return; }
     if (o.sessionId) domWait[o.sessionId] = o.reqId;
@@ -747,6 +750,45 @@
     setTimeout(watchSession, 1000);
   }
 
+  /* ============ 官网「深度思考 / 智能搜索」按钮同步 ============ */
+  // 页面用 .ds-toggle-button + aria-pressed 表示开关（实测 selector）。
+  // 真正生效靠注入请求体里的 thinking_enabled / search_enabled；这里同步按钮
+  // 是为了让界面显示与实际请求一致，并作为兜底。
+  function matchToggle(texts) {
+    try {
+      var nodes = document.querySelectorAll('.ds-toggle-button, [class*="toggle-button"], [class*="toggle"], [role="switch"], button[aria-pressed]');
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var t = (el.textContent || '').replace(/\s+/g, '');
+        if (t.length > 16) continue;
+        for (var k = 0; k < texts.length; k++) {
+          if (t.indexOf(texts[k]) >= 0) return el;
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+  function toggleIsOn(el) {
+    if (!el) return null;
+    var a = el.getAttribute('aria-pressed');
+    if (a === null) a = el.getAttribute('aria-checked');
+    if (a !== null) return a === 'true';
+    return /(^|\s)(active|selected|checked)(\s|$)/.test(el.className || '');
+  }
+  function syncToggle(texts, wantOn) {
+    var el = matchToggle(texts);
+    if (!el) return { found: false };
+    var on = toggleIsOn(el);
+    if (on !== wantOn) { try { el.click(); } catch (e) {} }
+    return { found: true, before: on, want: wantOn };
+  }
+  function applyToggles() {
+    // 思考：默认开；联网搜索：默认关（'智能搜索' 是现行文案，'联网搜索' 是旧文案）
+    var th = syncToggle(['深度思考', '深度思考(R1)', '智能思考', '深度思考R1'], opts.thinking !== 'off');
+    var se = syncToggle(['联网搜索', '智能搜索'], opts.search === 'on');
+    return { thinking: th, search: se };
+  }
+
   /* ================= 原生侧入口 ================= */
   window.DSKB = {
     ping: function () { return 'pong'; },
@@ -755,7 +797,8 @@
       o = o || {};
       if (o.thinking) opts.thinking = o.thinking;
       if (o.search) opts.search = o.search;
-      return JSON.stringify(opts);
+      var toggles = applyToggles();     // 同步官网「深度思考 / 智能搜索」按钮
+      return JSON.stringify({ opts: opts, toggles: toggles });
     },
 
     setTheme: function (dark) { applyTheme(!!dark); return 'ok'; },

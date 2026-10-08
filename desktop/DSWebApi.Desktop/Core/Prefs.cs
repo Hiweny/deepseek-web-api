@@ -1,4 +1,4 @@
-namespace DSWebApi.Desktop.Core;
+﻿namespace DSWebApi.Desktop.Core;
 
 /// <summary>设置持久化（%LOCALAPPDATA%\DeepSeekWebAPI\settings.json）。默认值与 APK 一致。</summary>
 public static class Prefs
@@ -77,8 +77,8 @@ public static class Prefs
     public static int ActivePort { get => GetInt("port_active", 0); set => Set("port_active", value); }
     public static string ApiKey { get => GetStr("api_key", "sk-deepseek"); set => Set("api_key", value); }
     public static int TimeoutSec { get => GetInt("timeout", 300); set => Set("timeout", value); }
-    public static string ThinkingMode { get => GetStr("thinking_mode", "auto"); set => Set("thinking_mode", value); }
-    public static string SearchMode { get => GetStr("search_mode", "auto"); set => Set("search_mode", value); }
+    public static string ThinkingMode { get => GetStr("thinking_mode", "on"); set => Set("thinking_mode", value); }
+    public static string SearchMode { get => GetStr("search_mode", "off"); set => Set("search_mode", value); }
     public static bool Stateless { get => GetBool("stateless", true); set => Set("stateless", value); }
     public static bool AutoNewChat { get => GetBool("auto_newchat", true); set => Set("auto_newchat", value); }
     public static int ContextTokens { get => GetInt("context_tokens", 1000000); set => Set("context_tokens", value); }

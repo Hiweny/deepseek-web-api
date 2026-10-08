@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 
@@ -694,24 +694,16 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                         if (toolMode) { /* 工具块，静默缓冲，结束时统一下发 */ }
                         else
                         {
-                            string norm = OpenAiAdapter.NormTag(ct);
-                            int si = norm.IndexOf("<|tool_calls_begin|>", StringComparison.Ordinal);
-                            if (si >= 0)
+                            // 只要出现工具标记信号（各种宽窄变体、乃至孤立残片都算），
+                            // 就停在标记之前转入静默 —— 绝不让标记或残片上屏。
+                            // 旧实现只认精确的 <|tool_calls_begin|>，且残片会随 HOLD 尾部一起漏出。
+                            int safe = ToolMarkup.SafeEmitEnd(ct);
+                            if (safe > emitted)
                             {
-                                if (si > emitted)
-                                    WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", ct.Substring(emitted, si - emitted)), null));
-                                emitted = si;
-                                toolMode = true;
+                                WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", ct.Substring(emitted, safe - emitted)), null));
+                                emitted = safe;
                             }
-                            else
-                            {
-                                int safe = ct.Length - HOLD;
-                                if (safe > emitted)
-                                {
-                                    WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", ct.Substring(emitted, safe - emitted)), null));
-                                    emitted = safe;
-                                }
-                            }
+                            if (ToolMarkup.EarliestSignal(ct) >= 0) toolMode = true;
                         }
                     }
                     catch (Exception) { }
@@ -764,17 +756,13 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                         }
                         else
                         {
-                            if (toolMode)
-                            {
-                                // 出现过标记但并非有效工具调用（正文里在解释/举例）：把原文补发，绝不吞内容
-                                if (content.Length > emitted)
-                                    WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", content.Substring(emitted)), null));
-                                Log.Write("检测到标记但非有效工具调用，已按正文输出");
-                            }
-                            else if (content.Length > emitted)
-                            {
-                                WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", content.Substring(emitted)), null));
-                            }
+                            // 非有效工具调用：补发剩余正文。**必须先剥掉标记残片**，
+                            // 否则「静默期之后」的残片会在这里逃逸成正文（用户实测的 bug）。
+                            string tailText = content.Length > emitted ? content.Substring(emitted) : "";
+                            tailText = ToolMarkup.StripStray(tailText);
+                            if (tailText.Length > 0)
+                                WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", tailText), null));
+                            if (toolMode) Log.Write("检测到标记但非有效工具调用，已按正文输出（残片已剥离）");
                             WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, new JObj(), "stop"));
                             _lastCallInfo = "成功 · " + content.Length + "字" + (r.Bool("recalled") ? " · 防撤回" : "");
                         }

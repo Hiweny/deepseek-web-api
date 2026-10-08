@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 
 namespace DSWebApi.Desktop.Core;
 
@@ -385,6 +385,8 @@ public static class PromptBuilder
         sb.Append("11. 严禁在正文、思考、代码块或示例中原样写出工具调用标记本身。"
                 + "若需要说明格式，请用「工具调用开始标记 / 结束标记」这样的文字描述；"
                 + "正文里出现真实标记会被系统当成工具调用，导致你后面的内容被截断。\n");
+        sb.Append("12. **不要使用网页自带的联网搜索**：只通过上面列出的工具获取外部信息。"
+                + "网页搜索的结果会与工具调用混淆，请始终用工具调用标记来请求工具。\n");
         if (names.Count > 0)
         {
             string a = names[0];

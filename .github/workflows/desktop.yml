@@ -1,4 +1,4 @@
-name: Build Windows EXE
+﻿name: Build Windows EXE
 
 on:
   push:
@@ -55,6 +55,13 @@ jobs:
           # 工具调用参数归一化：声明为 string 的参数被写成对象时，必须转成字符串
           if ($txt -notmatch 'PASS\s+T 声明为 string') { throw "工具参数按声明类型归一化用例未通过（string 参数不得以对象形式返回给客户端）" }
           if ($txt -notmatch 'PASS\s+U 声明为 object') { throw "工具参数归一化的反向保护用例未通过（object 参数必须保持对象）" }
+          # 工具调用标记残片绝不许上屏（用户实测的「工具漏进正文」bug）
+          if ($txt -notmatch 'PASS\s+Z1 孤立 end 残片剥离') { throw "Z1 未通过：孤立 end 残片会漏进正文" }
+          if ($txt -notmatch 'PASS\s+Z2 只剩后半截残片剥离') { throw "Z2 未通过：只剩后半截的标记残片会漏进正文" }
+          if ($txt -notmatch 'PASS\s+Z3 变体 begin（空格）剥离') { throw "Z3 未通过：带空格的标记变体会漏进正文" }
+          if ($txt -notmatch 'PASS\s+Z4 全角竖线变体剥离') { throw "Z4 未通过：全角竖线标记变体会漏进正文" }
+          if ($txt -notmatch 'PASS\s+Z7 变体矩阵') { throw "Z7 未通过：标记变体矩阵有组合未被识别" }
+          if ($txt -notmatch 'PASS\s+Z10 随机 fuzz') { throw "Z10 未通过：随机畸变下有标记残片漏进正文" }
 
       # ---------- 2) 单文件发布 ----------
       - name: Publish single-file exe

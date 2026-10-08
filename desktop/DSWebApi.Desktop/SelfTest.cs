@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Text;
 using DSWebApi.Desktop.Core;
 
@@ -215,9 +215,11 @@ internal static class SelfTest
                 + OpenAiAdapter.START + "[{\"name\": \"工具名\", \"arguments\": {}}]" + OpenAiAdapter.END
                 + "，你懂了吗？";
             var cr = OpenAiAdapter.Process("", body, tools);
+            // 不误判（toolCalls==null）+ 正文文字保留 + 标记残片剥离（不许上屏）
             Check("H 正文解释标记不误判且不吞内容",
-                cr.toolCalls == null && cr.content == body && cr.toolError == "NOT_A_TOOL_CALL",
-                "tc=" + (cr.toolCalls?.Count) + " len=" + cr.content.Length + "/" + body.Length);
+                cr.toolCalls == null && cr.toolError == "NOT_A_TOOL_CALL"
+                && cr.content.Contains("你懂了吗") && cr.content.IndexOf("tool\u2581calls", StringComparison.Ordinal) < 0,
+                "tc=" + (cr.toolCalls?.Count) + " content='" + cr.content + "'");
         }
 
         // I) 代码块内的标记
@@ -227,16 +229,18 @@ internal static class SelfTest
                 + "\n```\n以上。";
             var cr = OpenAiAdapter.Process("", body, tools);
             Check("I 代码块内标记不误判且不吞内容",
-                cr.toolCalls == null && cr.content == body,
-                "tc=" + (cr.toolCalls?.Count) + " len=" + cr.content.Length);
+                cr.toolCalls == null && cr.content.Contains("以上。")
+                && cr.content.IndexOf("tool\u2581calls", StringComparison.Ordinal) < 0,
+                "tc=" + (cr.toolCalls?.Count) + " content='" + cr.content + "'");
         }
 
         // J) 标记内 JSON 非法 → 原样返回全文
         {
             string body = OpenAiAdapter.START + "[not a json]" + OpenAiAdapter.END + "尾部说明";
             var cr = OpenAiAdapter.Process("", body, tools);
-            Check("J 非法内容不误判且保留全文", cr.toolCalls == null && cr.content == body,
-                "tc=" + (cr.toolCalls?.Count));
+            Check("J 非法内容不误判且保留正文", cr.toolCalls == null && cr.content.Contains("尾部说明")
+                && cr.content.IndexOf("tool\u2581calls", StringComparison.Ordinal) < 0,
+                "tc=" + (cr.toolCalls?.Count) + " content='" + cr.content + "'");
         }
 
         // K) 真实调用：正文只有标记 → 正文清空、finish_reason=tool_calls
@@ -309,7 +313,8 @@ internal static class SelfTest
                 + " 完。";
             var cr = OpenAiAdapter.Process("", body, null);
             Check("Q 无列表：中文占位名不误判",
-                cr.toolCalls == null && cr.content == body, "tc=" + (cr.toolCalls?.Count));
+                cr.toolCalls == null && cr.content.Contains("完。")
+                && cr.content.IndexOf("tool\u2581calls", StringComparison.Ordinal) < 0, "tc=" + (cr.toolCalls?.Count));
         }
 
         // R) 无 tools 列表时：代码块内的标记不当成工具调用
@@ -319,7 +324,8 @@ internal static class SelfTest
                 + "\n```\n以上。";
             var cr = OpenAiAdapter.Process("", body, null);
             Check("R 无列表：代码块内标记不误判",
-                cr.toolCalls == null && cr.content == body, "tc=" + (cr.toolCalls?.Count));
+                cr.toolCalls == null && cr.content.Contains("以上。")
+                && cr.content.IndexOf("tool\u2581calls", StringComparison.Ordinal) < 0, "tc=" + (cr.toolCalls?.Count));
         }
 
         // P) 过度转义（多一层）也能还原成对象，而不是丢给下游一个字符串
@@ -398,6 +404,128 @@ internal static class SelfTest
             Check("S bridge.js 内嵌资源可载入且非空",
                 js.Length > 5000 && js.Contains("window.DSKB") && js.Contains("__DSWB_LOADED"),
                 "bytes=" + js.Length);
+        }
+
+        // Z1~Z6) 工具标记残片绝不许上屏（旧版会漏进正文 —— 用户实测的 bug）
+        {
+            var cr = OpenAiAdapter.Process("", "正文。\n</|tool\u2581calls\u2581end|>", tools);
+            Check("Z1 孤立 end 残片剥离",
+                cr.content.IndexOf("tool\u2581calls", StringComparison.Ordinal) < 0 && cr.content.Contains("正文。"),
+                "content='" + cr.content + "'");
+        }
+        {
+            var cr = OpenAiAdapter.Process("", "正文。\nvoke>\n</ calls>", tools);
+            Check("Z2 只剩后半截残片剥离",
+                cr.content.IndexOf("voke>", StringComparison.Ordinal) < 0
+                && cr.content.IndexOf("calls>", StringComparison.Ordinal) < 0 && cr.content.Contains("正文。"),
+                "content='" + cr.content + "'");
+        }
+        {
+            var cr = OpenAiAdapter.Process("", "正文。<| tool_calls_begin |>xx", tools);
+            Check("Z3 变体 begin（空格）剥离",
+                cr.content.IndexOf("tool_calls_begin", StringComparison.Ordinal) < 0 && cr.content.Contains("正文。"),
+                "content='" + cr.content + "'");
+        }
+        {
+            var cr = OpenAiAdapter.Process("", "正文。<\uFF5Ctool\u2581calls\u2581begin\uFF5C>xx", tools);
+            Check("Z4 全角竖线变体剥离",
+                cr.content.IndexOf("\uFF5Ctool", StringComparison.Ordinal) < 0 && cr.content.Contains("正文。"),
+                "content='" + cr.content + "'");
+        }
+        {
+            // 流式安全边界：正常正文里行内讨论 <invoke> 不该被当成标记信号
+            string plain = "在 HTML 里 <invoke> 不是标准标签。";
+            Check("Z5 SafeEmitEnd 不误伤行内讨论", ToolMarkup.EarliestSignal(plain) < 0,
+                "signal=" + ToolMarkup.EarliestSignal(plain));
+        }
+        {
+            // 流式安全边界：标记出现处之前才可上屏
+            int cut = ToolMarkup.SafeEmitEnd("正文。" + OpenAiAdapter.START + "[A]" + OpenAiAdapter.END);
+            Check("Z6 流式安全边界停在标记之前", cut == 3, "cut=" + cut);
+        }
+
+        {
+            // Z7 变体矩阵：竖线（半角/全角/带空格）× 分隔符（_/▁/空格）× 大小写 任意组合
+            string[] bars = { "|", "\uFF5C", "| " };
+            string[] seps = { "_", "\u2581", " " };
+            string[] lows = { "tool", "TOOL" };
+            string[] ends = { "end", "END" };
+            int bad = 0, total = 0;
+            foreach (var bar in bars)
+                foreach (var sep in seps)
+                    foreach (var lo in lows)
+                        foreach (var en in ends)
+                        {
+                            total++;
+                            string b0 = "<" + bar + lo + sep + "calls" + sep + "begin" + bar + ">";
+                            string e0 = "<" + bar + lo + sep + "calls" + sep + en + bar + ">";
+                            string body = "前置。" + b0 + "[{\"name\":\"read_file\",\"arguments\":{}}]" + e0 + "后置。";
+                            var cr = OpenAiAdapter.Process("", body, tools);
+                            if (cr.toolCalls == null || cr.toolCalls.Count != 1) { bad++; continue; }
+                            if (cr.content.IndexOf("tool", StringComparison.OrdinalIgnoreCase) >= 0
+                                && cr.content.IndexOf("calls", StringComparison.OrdinalIgnoreCase) >= 0) bad++;
+                        }
+            Check("Z7 变体矩阵全部识别且不残留 (" + total + " 种)", bad == 0, "bad=" + bad + "/" + total);
+        }
+        {
+            // Z8 流式逐字符（最细粒度）：累计上屏正文 + 收尾，都不许含标记；识别为调用时不补发 JSON
+            string full = "完成安装说明。\n\n\n\n" + OpenAiAdapter.START
+                + "[{\"name\":\"read_file\",\"arguments\":{}}]" + OpenAiAdapter.END;
+            int emittedLen = 0; bool toolMode = false;
+            for (int i = 1; i <= full.Length; i++)
+            {
+                string ct = full.Substring(0, i);
+                if (toolMode) continue;
+                int emit2 = ToolMarkup.SafeEmitEnd(ct);
+                if (emit2 > emittedLen) emittedLen = emit2;
+                if (ToolMarkup.EarliestSignal(ct) >= 0) toolMode = true;
+            }
+            var cr2 = OpenAiAdapter.Process("", full, tools);
+            string all = full.Substring(0, emittedLen);
+            if (cr2.toolCalls == null) all += ToolMarkup.StripStray(full.Substring(emittedLen));
+            Check("Z8 流式逐字符不泄漏",
+                all.IndexOf("tool", StringComparison.OrdinalIgnoreCase) < 0
+                && all.IndexOf("calls", StringComparison.OrdinalIgnoreCase) < 0 && all.Contains("完成安装说明"),
+                "all='" + all + "'");
+        }
+        {
+            // Z9 流式：模型把开始标签写丢，只剩孤立闭合标签 —— 残片绝不许上屏
+            string full = "正文一。\n" + "</|tool\u2581calls\u2581end|>";
+            int emittedLen = 0;
+            for (int i = 1; i <= full.Length; i++)
+            {
+                int emit2 = ToolMarkup.SafeEmitEnd(full.Substring(0, i));
+                if (emit2 > emittedLen) emittedLen = emit2;
+            }
+            string all = full.Substring(0, emittedLen) + ToolMarkup.StripStray(full.Substring(emittedLen));
+            Check("Z9 流式孤立残片不泄漏",
+                all.IndexOf("tool", StringComparison.OrdinalIgnoreCase) < 0 && all.Contains("正文一"),
+                "all='" + all + "'");
+        }
+        {
+            // Z10 随机 fuzz：对标记做随机字符扰动，只要仍被识别为调用，正文就不许残留标记
+            var rnd = new Random(20261008);
+            string[] frags = { "|", "\uFF5C", "_", "\u2581", " ", "/", "\u2581calls", "tool", "calls", "begin", "end", ">" };
+            int leak = 0;
+            for (int it = 0; it < 500; it++)
+            {
+                string b0 = "<|tool\u2581calls\u2581begin|>";
+                string e0 = "<|tool\u2581calls\u2581end|>";
+                string body = "前。" + b0 + "[{\"name\":\"read_file\",\"arguments\":{}}]" + e0 + "后。";
+                // 随机插入零宽/空白等价字符
+                int ins = rnd.Next(0, 3);
+                for (int k = 0; k < ins; k++)
+                {
+                    int p2 = rnd.Next(body.Length);
+                    body = body.Substring(0, p2) + frags[rnd.Next(frags.Length)] + body.Substring(p2);
+                }
+                var cr3 = OpenAiAdapter.Process("", body, tools);
+                if (cr3.toolCalls != null && cr3.toolCalls.Count > 0)
+                {
+                    if (cr3.content.IndexOf("calls", StringComparison.OrdinalIgnoreCase) >= 0) leak++;
+                }
+            }
+            Check("Z10 随机 fuzz 不泄漏 (500 次)", leak == 0, "leak=" + leak);
         }
 
         Say("--- 自检结果: " + _pass + " 通过 / " + _fail + " 失败 ---");
