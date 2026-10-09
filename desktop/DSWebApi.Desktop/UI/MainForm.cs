@@ -1060,12 +1060,6 @@ public sealed class MainForm : Form
         return string.IsNullOrEmpty(u) ? "" : u + "/v1";
     }
 
-    private void OpenUrl(string url)
-    {
-        if (string.IsNullOrEmpty(url)) { MessageBox.Show("公网隧道尚未连接。请在「设置」里填好 API Token 与公网域名并启用。", Program.AppName); return; }
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
-    }
-
     private void NewChat()
     {
         var r = WebBridge.I.NewChat();
@@ -1130,6 +1124,11 @@ public sealed class MainForm : Form
 
     private static void OpenUrl(string url)
     {
+        if (string.IsNullOrEmpty(url))
+        {
+            try { MessageBox.Show("公网隧道尚未连接。请在「设置」里填好 Cloudflare API Token 与公网域名后再启用。", Program.AppName); } catch { }
+            return;
+        }
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
     }
 
