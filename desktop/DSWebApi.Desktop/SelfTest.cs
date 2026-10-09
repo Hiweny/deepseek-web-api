@@ -505,27 +505,169 @@ internal static class SelfTest
         {
             // Z10 随机 fuzz：对标记做随机字符扰动，只要仍被识别为调用，正文就不许残留标记
             var rnd = new Random(20261008);
-            string[] frags = { "|", "\uFF5C", "_", "\u2581", " ", "/", "\u2581calls", "tool", "calls", "begin", "end", ">" };
-            int leak = 0;
+            // 只对「标记的分隔符位置」随机化（半角/全角竖线、_ / ▁ / 空格 / 空、多写竖线）——
+            // 这才是模型真实的「写残」分布；不往标记里乱插 <、> 等结构符（那已不构成标记）。
+            string[] bars = { "|", "\uFF5C", "", "| ", "||" };
+            string[] seps = { "_", "\u2581", " ", "", "|", "\uFF5C", "__" };
+            int leak = 0, miss = 0; string leakSample = "";
+            string MkTag(string w)
+            {
+                string bx = bars[rnd.Next(bars.Length)];
+                return "<" + bx + "tool" + seps[rnd.Next(seps.Length)] + "calls"
+                    + seps[rnd.Next(seps.Length)] + w + seps[rnd.Next(seps.Length)] + bx + ">";
+            }
             for (int it = 0; it < 500; it++)
             {
-                string b0 = "<|tool\u2581calls\u2581begin|>";
-                string e0 = "<|tool\u2581calls\u2581end|>";
-                string body = "前。" + b0 + "[{\"name\":\"read_file\",\"arguments\":{}}]" + e0 + "后。";
-                // 随机插入零宽/空白等价字符
-                int ins = rnd.Next(0, 3);
-                for (int k = 0; k < ins; k++)
-                {
-                    int p2 = rnd.Next(body.Length);
-                    body = body.Substring(0, p2) + frags[rnd.Next(frags.Length)] + body.Substring(p2);
-                }
+                string body = "前。" + MkTag("begin") + "[{\"name\":\"read_file\",\"arguments\":{}}]" + MkTag("end") + "后。";
                 var cr3 = OpenAiAdapter.Process("", body, tools);
-                if (cr3.toolCalls != null && cr3.toolCalls.Count > 0)
+                if (cr3.toolCalls == null || cr3.toolCalls.Count == 0)
                 {
-                    if (cr3.content.IndexOf("calls", StringComparison.OrdinalIgnoreCase) >= 0) leak++;
+                    miss++;
+                    if (miss <= 3) leakSample += "\n   MISS=[" + body + "] -> [" + cr3.content + "]";
+                    continue;
+                }
+                string rest = cr3.content;
+                bool dirty = ToolMarkup.StrongRe.IsMatch(rest) || ToolMarkup.BarLooseRe.IsMatch(rest)
+                    || ToolMarkup.BarWrapRe.IsMatch(rest) || rest.IndexOf("calls", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (dirty)
+                {
+                    leak++;
+                    if (leak <= 4) leakSample += "\n   BODY=[" + body + "] -> [" + rest + "]";
                 }
             }
-            Check("Z10 随机 fuzz 不泄漏 (500 次)", leak == 0, "leak=" + leak);
+            Check("Z10 随机 fuzz 不泄漏 (500 次)", leak == 0 && miss == 0, "leak=" + leak + " miss=" + miss + " || " + leakSample);
+        }
+
+        // Z11~Z20) 工具调用「JSON 写坏 / 漏写标记」不再泄漏进正文（2026-10-09 修复）
+        {
+            // Z11 截断块（有 begin 没 end）：坏 JSON 必须整块丢弃，绝不补发
+            var cr = OpenAiAdapter.Process("", "开始\n" + OpenAiAdapter.START
+                + "[{\"name\":\"read_file\",\"arguments\":{\"path\":\"Get-Date", tools);
+            Check("Z11 截断块不泄漏",
+                cr.content.IndexOf("read_file", StringComparison.Ordinal) < 0
+                && cr.content.IndexOf("arguments", StringComparison.Ordinal) < 0,
+                "content='" + cr.content + "' err=" + cr.toolError);
+        }
+        {
+            // Z12 漏写标记：裸 JSON 数组也要被识别为工具调用
+            var cr = OpenAiAdapter.Process("", "好的。\n[{\"name\":\"read_file\",\"arguments\":{\"path\":\"a.txt\"}}]", tools);
+            Check("Z12 裸 JSON 数组识别",
+                cr.toolCalls != null && cr.toolCalls.Count == 1
+                && cr.content.IndexOf("read_file", StringComparison.Ordinal) < 0,
+                "calls=" + (cr.toolCalls?.Count ?? -1) + " content='" + cr.content + "'");
+        }
+        {
+            // Z13 漏写标记 + {"tool_calls":[...]} 包装
+            var cr = OpenAiAdapter.Process("", "好的。\n{\"tool_calls\":[{\"name\":\"read_file\",\"arguments\":{\"path\":\"a.txt\"}}]}", tools);
+            Check("Z13 裸 tool_calls 包装识别",
+                cr.toolCalls != null && cr.toolCalls.Count == 1
+                && cr.content.IndexOf("tool_calls", StringComparison.Ordinal) < 0,
+                "calls=" + (cr.toolCalls?.Count ?? -1) + " content='" + cr.content + "'");
+        }
+        {
+            // Z14 结构性修复：批量调用每个元素少一个 }
+            var cr = OpenAiAdapter.Process("", OpenAiAdapter.START
+                + "[{\"name\":\"read_file\",\"arguments\":{\"path\":\"a\"},{\"name\":\"read_file\",\"arguments\":{\"path\":\"b\"}}]"
+                + OpenAiAdapter.END, tools);
+            Check("Z14 缺元素 } 补括号", cr.toolCalls != null && cr.toolCalls.Count == 2,
+                "calls=" + (cr.toolCalls?.Count ?? -1) + " content='" + cr.content + "'");
+        }
+        {
+            // Z15 缺最后的 ]
+            var cr = OpenAiAdapter.Process("", OpenAiAdapter.START
+                + "[{\"name\":\"read_file\",\"arguments\":{\"path\":\"a\"}}" + OpenAiAdapter.END, tools);
+            Check("Z15 缺 ] 仍可识别", cr.toolCalls != null && cr.toolCalls.Count == 1,
+                "calls=" + (cr.toolCalls?.Count ?? -1));
+        }
+        {
+            // Z16 文档现象 A（args\": 多余转义 + 被截断）绝不泄漏
+            var cr = OpenAiAdapter.Process("", "片段。\n" + OpenAiAdapter.START
+                + "[{\"name\": \"run_mcp\", \"arguments\": {\"args\\\": {\\\"code\\\":\\\"async () => {", tools);
+            Check("Z16 文档现象A 不泄漏",
+                cr.content.IndexOf("arguments", StringComparison.Ordinal) < 0
+                && cr.content.IndexOf("run_mcp", StringComparison.Ordinal) < 0,
+                "content='" + cr.content + "' err=" + cr.toolError);
+        }
+        {
+            // Z17 未声明工具时，正文里的 JSON 不许被误判、也不许被吞
+            var none = new HashSet<string>(StringComparer.Ordinal);
+            var cr = OpenAiAdapter.Process("", "这是数据：\n[{\"name\":\"Alice\",\"arguments\":{\"x\":1}}]", none);
+            Check("Z17 无工具声明时裸 JSON 当正文",
+                (cr.toolCalls == null || cr.toolCalls.Count == 0) && cr.content.Contains("Alice"),
+                "calls=" + (cr.toolCalls?.Count ?? -1) + " content='" + cr.content + "'");
+        }
+        {
+            // Z18 正文里讨论标记仍原样保留（不能因为防泄漏而吞正文）
+            var cr = OpenAiAdapter.Process("", "这段标记 " + OpenAiAdapter.START + " 是协议规定。", tools);
+            Check("Z18 正文讨论标记不被吞", cr.content.Contains("是协议规定"),
+                "content='" + cr.content + "'");
+        }
+        {
+            // Z19 流式：声明工具时裸 JSON 也要被 hold（不得逐字上屏）
+            string bare = "好的。\n[{\"name\":\"read_file\",\"arguments\":{\"path\":\"a\"}}]";
+            int emitted0 = 0; bool tm = false;
+            for (int i = 1; i <= bare.Length; i++)
+            {
+                string ct = bare.Substring(0, i);
+                if (tm) continue;
+                int emitBare = ToolMarkup.SafeEmitEnd(ct, 32, true);
+                if (emitBare > emitted0) emitted0 = emitBare;
+                if (ToolMarkup.EarliestSignal(ct, true) >= 0) tm = true;
+            }
+            Check("Z19 流式裸 JSON 被 hold",
+                bare.Substring(0, emitted0).IndexOf("name", StringComparison.Ordinal) < 0,
+                "shown='" + bare.Substring(0, emitted0) + "'");
+        }
+        {
+            // Z20 流式收尾补发：写坏的块必须被 CutSpans 裁掉
+            string full = "开始\n" + OpenAiAdapter.START + "[{\"name\":\"read_file\",\"arguments\":{\"path\":\"半";
+            var cr = OpenAiAdapter.Process("", full, tools);
+            int emitted = ToolMarkup.SafeEmitEnd(full, 32, true);
+            string tail = ToolMarkup.StripStray(full.Substring(emitted));
+            tail = OpenAiAdapter.CutSpans(tail, emitted, cr.droppedSpans);
+            Check("Z20 流式收尾不补发坏块",
+                tail.IndexOf("arguments", StringComparison.Ordinal) < 0
+                && tail.IndexOf("read_file", StringComparison.Ordinal) < 0,
+                "emitted=" + emitted + " tail='" + tail + "'");
+        }
+
+        // Z21~Z24) 输入/附件上限保护（2026-10-09）：超长 prompt 中段截断 + 图片附件只留最近 N 张
+        {
+            // Z21 超长 prompt 中段截断：必须保留「系统指令」与最近的对话，并插入省略标记
+            var longMsg = new string('A', 4000) + "尾部最新内容";
+            var req = (JObj)Json.TryParse("{\"messages\":[{\"role\":\"system\",\"content\":\"你是助手\"},{\"role\":\"user\",\"content\":\"" + longMsg + "\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"read_file\"}}]}");
+            var r = PromptBuilder.Build(req, true, 1200, 0);
+            Check("Z21 超长 prompt 中段截断",
+                r.truncated && r.text.Length <= 1200
+                && r.text.Contains("已自动省略") && r.text.Contains("尾部最新内容")
+                && r.text.Contains("【系统指令】"),
+                "len=" + r.text.Length + " truncated=" + r.truncated);
+        }
+        {
+            // Z22 未超长：原样不动、不截断
+            var req = (JObj)Json.TryParse("{\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}");
+            var r = PromptBuilder.Build(req, true, 100000, 0);
+            Check("Z22 未超长不改写", !r.truncated && r.text.Contains("你好"), "len=" + r.text.Length);
+        }
+        {
+            // Z23 图片附件超上限：只保留最近的 N 张，记录被略过数
+            string img = "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgo=\"}}";
+            var arr = new StringBuilder();
+            for (int i = 0; i < 5; i++) { if (i > 0) arr.Append(','); arr.Append(img); }
+            var req = (JObj)Json.TryParse("{\"messages\":[{\"role\":\"user\",\"content\":[" + arr.ToString() + ",{\"type\":\"text\",\"text\":\"看图\"}]}]}");
+            var r = PromptBuilder.Build(req, true, 0, 2);
+            Check("Z23 附件超上限只留最近 N 张",
+                r.attachments.Count == 2 && r.omittedImages == 3,
+                "kept=" + r.attachments.Count + " omitted=" + r.omittedImages);
+        }
+        {
+            // Z24 会话模式（stateless=false）同样受上限保护
+            var longMsg = new string('B', 3000) + "最后的提问";
+            var req = (JObj)Json.TryParse("{\"messages\":[{\"role\":\"user\",\"content\":\"" + longMsg + "\"}]}");
+            var r = PromptBuilder.Build(req, false, 900, 0);
+            Check("Z24 会话模式同样受上限保护",
+                r.truncated && r.text.Length <= 900 && r.text.Contains("最后的提问"),
+                "len=" + r.text.Length + " truncated=" + r.truncated);
         }
 
         Say("--- 自检结果: " + _pass + " 通过 / " + _fail + " 失败 ---");

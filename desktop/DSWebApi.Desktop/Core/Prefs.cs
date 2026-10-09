@@ -83,6 +83,10 @@ public static class Prefs
     public static bool AutoNewChat { get => GetBool("auto_newchat", true); set => Set("auto_newchat", value); }
     public static int ContextTokens { get => GetInt("context_tokens", 1000000); set => Set("context_tokens", value); }
     public static int NewChatThreshold { get => GetInt("newchat_threshold", 70); set => Set("newchat_threshold", value); }
+    /// <summary>单请求 prompt 字符上限（超出做中段截断；0 = 不限制）。网页端硬上限约 2621440 字符，默认留约 43% 余量。</summary>
+    public static int MaxPromptChars { get => GetInt("max_prompt_chars", 1500000); set => Set("max_prompt_chars", value); }
+    /// <summary>单请求图片附件数量上限（只保留最近 N 张；0 = 不限制）。网页端实测成功 40 张、失败 52 张，默认取 40。</summary>
+    public static int MaxRefImages { get => GetInt("max_ref_images", 40); set => Set("max_ref_images", value); }
 
     // 桌面端特有
     public static bool CloseToTray { get => GetBool("close_to_tray", true); set => Set("close_to_tray", value); }

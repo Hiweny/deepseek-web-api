@@ -24,11 +24,32 @@ public static class PromptBuilder
         public string text = "";
         public readonly List<Attachment> attachments = new List<Attachment>();
         public bool hasTools = false;
+        /// <summary>本次因超长被中段截断（正文里已插省略标记）。</summary>
+        public bool truncated = false;
+        /// <summary>截断时被省略的字符数。</summary>
+        public long omittedChars = 0;
+        /// <summary>因超出附件数量上限被略过的图片数。</summary>
+        public int omittedImages = 0;
         /// <summary>本次请求声明的工具名（用于甄别「正文里解释标记」的误判）。</summary>
         public readonly List<string> toolNames = new List<string>();
     }
 
-    public static Result Build(JObj req, bool stateless)
+    public static Result Build(JObj req, bool stateless) => Build(req, stateless, 0, 0);
+
+    /// <summary>
+    /// 按上限构建 prompt：
+    ///   maxChars &gt; 0     → 超长时「中段截断」（保留系统指令/工具协议 + 最近对话）
+    ///   maxRefImages &gt; 0 → 图片附件只保留最近 N 张
+    /// 目的是避免前端把超长工具结果塞进下一轮，撞上网页端「输入上限 / 附件数量上限」而报调用错误。
+    /// </summary>
+    public static Result Build(JObj req, bool stateless, int maxChars, int maxRefImages)
+    {
+        var r = BuildCore(req, stateless);
+        Fit(r, maxChars, maxRefImages);
+        return r;
+    }
+
+    private static Result BuildCore(JObj req, bool stateless)
     {
         var r = new Result();
         var messages = req.Arr("messages");
@@ -95,6 +116,61 @@ public static class PromptBuilder
         sb.Append(body);
         r.text = sb.ToString().Trim();
         return r;
+    }
+
+    /// <summary>上限保护：附件只留最近 N 张；prompt 超长则中段截断（保留系统指令/工具协议与最近对话）。</summary>
+    private static void Fit(Result r, int maxChars, int maxRefImages)
+    {
+        // ① 附件数量上限：网页端对一批引用的数量有硬上限，越过会让该会话此后每一轮都失败
+        if (maxRefImages > 0 && r.attachments.Count > maxRefImages)
+        {
+            r.omittedImages = r.attachments.Count - maxRefImages;
+            r.attachments.RemoveRange(0, r.omittedImages);   // 丢弃最早的，保留最近 N 张
+        }
+        // ② 字符预算：中段截断
+        if (maxChars > 0) FitChars(r, maxChars);
+    }
+
+    private static void FitChars(Result r, int maxChars)
+    {
+        string text = r.text ?? "";
+        if (text.Length <= maxChars) return;
+        const int RESERVE = 160;                       // 省略标记预留
+        long budget = Math.Max(512, maxChars - RESERVE);
+
+        // head = 从「【系统指令】」到第一个空行（系统提示 + 工具协议），尽量完整保留，避免工具 schema 被截半
+        string head = "";
+        string body = text;
+        if (text.StartsWith("【系统指令】"))
+        {
+            int cut = text.IndexOf("\n\n", 6);
+            if (cut > 0) { head = text.Substring(0, cut); body = text.Substring(cut + 2); }
+        }
+        long headBudget = Math.Min(head.Length, (long)Math.Floor(budget * 0.45));
+        long bodyBudget = budget - headBudget;
+        if (bodyBudget < 0) bodyBudget = 0;
+
+        string headOut = head.Length > headBudget ? head.Substring(0, (int)headBudget) : head;
+        string bodyOut = body;
+        if (body.Length > bodyBudget)
+        {
+            int keep = (int)bodyBudget;
+            int start = body.Length - keep;            // 保留尾部（最近回合）
+            int nl = body.IndexOf("\n\n", start);
+            if (nl >= 0 && nl - start <= 800) start = nl + 2;
+            else { int nl2 = body.IndexOf('\n', start); if (nl2 >= 0 && nl2 - start <= 240) start = nl2 + 1; }
+            if (start < 0) start = 0;
+            if (start > body.Length) start = body.Length;
+            bodyOut = body.Substring(start);
+        }
+        long omitted = (head.Length - headOut.Length) + (body.Length - bodyOut.Length);
+        var sb = new StringBuilder();
+        if (headOut.Length > 0) sb.Append(headOut).Append("\n\n");
+        sb.Append("[上下文过长：已自动省略约 ").Append(omitted).Append(" 字符，仅保留系统指令与最近对话]\n\n");
+        sb.Append(bodyOut);
+        r.text = sb.ToString().Trim();
+        r.truncated = true;
+        r.omittedChars = omitted;
     }
 
     private static string BuildStateless(JArr messages, string toolBlock, string formatBlock, Result r)

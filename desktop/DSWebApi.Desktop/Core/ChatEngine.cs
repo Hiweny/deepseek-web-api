@@ -283,8 +283,23 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
     {
         if (string.IsNullOrEmpty(err)) return false;
         if (err.IndexOf("CONTEXT_LIMIT", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-        return (err.Contains("上下文") && (err.Contains("上限") || err.Contains("超出") || err.Contains("过长") || err.Contains("达到")))
-            || err.Contains("长度上限") || err.Contains("达到最大长度");
+        if (err.Contains("上下文") && (err.Contains("上限") || err.Contains("超出") || err.Contains("过长") || err.Contains("达到"))) return true;
+        if (err.Contains("长度上限") || err.Contains("达到最大长度") || err.Contains("输入过长")
+            || err.Contains("内容过长") || err.Contains("文本过长") || err.Contains("字数上限")) return true;
+        string low = err.ToLowerInvariant();
+        return (low.Contains("too long") || low.Contains("too large") || low.Contains("exceed"))
+            && (low.Contains("content") || low.Contains("prompt") || low.Contains("context")
+                || low.Contains("input") || low.Contains("message") || low.Contains("text") || low.Contains("token"));
+    }
+
+    /// <summary>错误里带「附件/引用文件过多」标记（网页端 biz_code 10 / too many ref file）。命中后该会话每轮都会失败，需新开对话。</summary>
+    public static bool LookTooManyRefFiles(string err)
+    {
+        if (string.IsNullOrEmpty(err)) return false;
+        if (err.Contains("附件") && (err.Contains("过多") || err.Contains("上限") || err.Contains("超出") || err.Contains("超限"))) return true;
+        if (err.Contains("引用文件") || err.Contains("文件数量")) return true;
+        string low = err.ToLowerInvariant();
+        return low.Contains("too many ref") || low.Contains("ref file");
     }
 
     /// <summary>官网把「上下文超限，请开启新对话」当成一条普通回复返回时的识别（严格限长，避免误判正常回答）。</summary>
@@ -516,8 +531,12 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
         bool stateless = Prefs.Stateless;
 
         PromptBuilder.Result pb;
-        try { pb = PromptBuilder.Build(body, stateless); }
+        try { pb = PromptBuilder.Build(body, stateless, Prefs.MaxPromptChars, Prefs.MaxRefImages); }
         catch (Exception e) { res.SendJson(400, ErrJson("Bad request: " + e.Message, "invalid_request_error")); return; }
+
+        // 上限保护提示（超长 prompt 中段截断 / 图片附件超出数量上限只保留最近 N 张）
+        if (pb.truncated) Log.Write("prompt 超长，已中段截断：省略约 " + pb.omittedChars + " 字符（保留系统指令与最近对话）");
+        if (pb.omittedImages > 0) Log.Write("附件图片超出上限，已略过最早 " + pb.omittedImages + " 张（本次只带 " + pb.attachments.Count + " 张）");
 
         if (pb.toolNames.Count > 0) _lastToolNames = new HashSet<string>(pb.toolNames, StringComparer.OrdinalIgnoreCase);
         // 工具声明的 JSON Schema（用于按类型归一化参数：声明为 string 的参数不能传对象/数组）
@@ -617,9 +636,12 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
 
         // 上下文超限（官网 toast，或官网把超限提示当成一条正文返回）→ 自动新开对话并重试一次。
         // 此时还没写任何响应，重试是安全的。
-        if (slot != null && (LookContextLimit(err0) || LookContextLimitText(content, thinking)))
+        bool hitLimit = LookContextLimit(err0) || LookContextLimitText(content, thinking);
+        bool hitRef = LookTooManyRefFiles(err0);
+        if (slot != null && (hitLimit || hitRef))
         {
-            Log.Write("账号 " + slot.Name + " 命中上下文上限 → 自动新开对话并重试（" + (err0.Length > 0 ? err0 : content) + "）");
+            Log.Write("账号 " + slot.Name + (hitRef ? " 命中附件数量上限" : " 命中上下文上限")
+                + " → 自动新开对话并重试（" + (err0.Length > 0 ? err0 : content) + "）");
             var nc = slot.Bridge.NewChat();
             AccountPool.I.MarkChatOpened(slot, nc.Str("sessionId"));
             System.Threading.Thread.Sleep(500);
@@ -697,13 +719,14 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                             // 只要出现工具标记信号（各种宽窄变体、乃至孤立残片都算），
                             // 就停在标记之前转入静默 —— 绝不让标记或残片上屏。
                             // 旧实现只认精确的 <|tool_calls_begin|>，且残片会随 HOLD 尾部一起漏出。
-                            int safe = ToolMarkup.SafeEmitEnd(ct);
+                            // 声明了工具时，**没有标记的裸 JSON** 也算信号（否则会被逐字上屏 → 泄漏）
+                            int safe = ToolMarkup.SafeEmitEnd(ct, HOLD, toolNames.Count > 0);
                             if (safe > emitted)
                             {
                                 WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", ct.Substring(emitted, safe - emitted)), null));
                                 emitted = safe;
                             }
-                            if (ToolMarkup.EarliestSignal(ct) >= 0) toolMode = true;
+                            if (ToolMarkup.EarliestSignal(ct, toolNames.Count > 0) >= 0) toolMode = true;
                         }
                     }
                     catch (Exception) { }
@@ -760,8 +783,13 @@ public sealed class ChatEngine : HttpServer.IRouter, WebBridge.IStatusListener
                             // 否则「静默期之后」的残片会在这里逃逸成正文（用户实测的 bug）。
                             string tailText = content.Length > emitted ? content.Substring(emitted) : "";
                             tailText = ToolMarkup.StripStray(tailText);
+                            // ★ 裁掉「已被判定为工具调用、但解析失败」的区间 —— 静默期缓冲的坏 JSON
+                            //   绝不能在收尾时补发出去（旧实现正是这么泄漏的）。
+                            tailText = OpenAiAdapter.CutSpans(tailText, emitted, cr.droppedSpans);
                             if (tailText.Length > 0)
                                 WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", tailText), null));
+                            else if (emitted == 0 && !string.IsNullOrEmpty(cr.content))
+                                WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, Delta("content", cr.content), null));
                             if (toolMode) Log.Write("检测到标记但非有效工具调用，已按正文输出（残片已剥离）");
                             WriteChunk(res, gate, OpenAiAdapter.Chunk(id, model, created, new JObj(), "stop"));
                             _lastCallInfo = "成功 · " + content.Length + "字" + (r.Bool("recalled") ? " · 防撤回" : "");

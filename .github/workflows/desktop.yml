@@ -62,6 +62,18 @@ jobs:
           if ($txt -notmatch 'PASS\s+Z4 全角竖线变体剥离') { throw "Z4 未通过：全角竖线标记变体会漏进正文" }
           if ($txt -notmatch 'PASS\s+Z7 变体矩阵') { throw "Z7 未通过：标记变体矩阵有组合未被识别" }
           if ($txt -notmatch 'PASS\s+Z10 随机 fuzz') { throw "Z10 未通过：随机畸变下有标记残片漏进正文" }
+          # 工具调用「JSON 写坏 / 漏写标记」不得再泄漏进正文（2026-10-09 修复）
+          if ($txt -notmatch 'PASS\s+Z11 截断块不泄漏') { throw "Z11 未通过：截断的工具块会漏进正文" }
+          if ($txt -notmatch 'PASS\s+Z12 裸 JSON 数组识别') { throw "Z12 未通过：漏写标记的裸 JSON 调用未识别" }
+          if ($txt -notmatch 'PASS\s+Z13 裸 tool_calls 包装识别') { throw "Z13 未通过：裸 tool_calls 包装未识别" }
+          if ($txt -notmatch 'PASS\s+Z14 缺元素') { throw "Z14 未通过：缺闭合括号的调用未被修复" }
+          if ($txt -notmatch 'PASS\s+Z15 缺') { throw "Z15 未通过：缺 ] 的调用未识别" }
+          if ($txt -notmatch 'PASS\s+Z16 文档现象A 不泄漏') { throw "Z16 未通过：多余转义/截断的调用块漏进正文" }
+          if ($txt -notmatch 'PASS\s+Z19 流式裸 JSON 被 hold') { throw "Z19 未通过：流式裸 JSON 未 hold" }
+          if ($txt -notmatch 'PASS\s+Z20 流式收尾不补发坏块') { throw "Z20 未通过：流式收尾补发了坏块" }
+          # 输入/附件上限保护（2026-10-09）：超长 prompt 中段截断 + 图片附件数量上限
+          if ($txt -notmatch 'PASS\s+Z21 超长 prompt 中段截断') { throw "Z21 未通过：超长 prompt 未做中段截断" }
+          if ($txt -notmatch 'PASS\s+Z23 附件超上限只留最近 N 张') { throw "Z23 未通过：图片附件数量上限未生效" }
 
       # ---------- 2) 单文件发布 ----------
       - name: Publish single-file exe

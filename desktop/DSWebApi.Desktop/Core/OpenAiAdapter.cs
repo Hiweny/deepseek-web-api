@@ -19,6 +19,8 @@ public static class OpenAiAdapter
         public string finishReason = "stop";
         /// <summary>工具块存在但解析失败时置位，避免把标记泄漏到正文。</summary>
         public string toolError = "";
+        /// <summary>已被摘除（判定为工具调用 / 写坏的调用块）的区间，供流式收尾补发时裁掉。</summary>
+        public List<int[]> droppedSpans;
     }
 
     /// <summary>标签归一化（1:1 字符映射，长度不变，索引可对齐）：｜->|，▁->_</summary>
@@ -51,10 +53,11 @@ public static class OpenAiAdapter
         string content = contentText ?? "";
         if (content.Length == 0) return r;
 
-        // ① 用**宽容正则**扫描所有工具块（覆盖竖线半角/全角、分隔符 _/▁/空格、大小写等变体，
-        //    以及只有 begin 没有 end 的截断块）。旧实现用 NormTag + 精确 IndexOf，只认一种形态，
-        //    变体与残片会整段落进正文 —— 这正是「工具标记漏进正文」的根因。
-        var ranges = new List<int[]>();
+        bool hasList = allowedNames != null && allowedNames.Count > 0;
+
+        // ① 候选块 A：**带标记**的工具块（宽容正则，覆盖竖线半角/全角、分隔符 _/▁/空格、大小写等变体，
+        //    以及只有 begin 没有 end 的截断块）。旧实现用 NormTag + 精确 IndexOf，只认一种形态。
+        var blocks = new List<int[]>();
         var inners = new List<string>();
         int pos = 0;
         while (pos < content.Length)
@@ -67,39 +70,128 @@ public static class OpenAiAdapter
             int endEx; string inner;
             if (me.Success) { endEx = me.Index + me.Length; inner = content.Substring(afterBegin, me.Index - afterBegin); }
             else { endEx = content.Length; inner = content.Substring(afterBegin); }
-            ranges.Add(new[] { start, endEx });
+            blocks.Add(new[] { start, endEx });
             inners.Add(inner);
             pos = endEx;
         }
 
-        bool hasList = allowedNames != null && allowedNames.Count > 0;
-        var calls = new JArr();
-        for (int i = 0; i < inners.Count; i++)
+        // ② 候选块 B：**没有标记的裸 JSON**（模型漏写标记时的兜底）。
+        //    只有客户端确实声明了工具时才启用 —— 否则会误伤正文里正常输出的 JSON。
+        if (hasList && blocks.Count == 0)
         {
-            var parsed = FilterCalls(ParseToolCalls(inners[i]), allowedNames);
+            foreach (var sp in FindBareJsonSpans(content))
+            {
+                blocks.Add(sp);
+                inners.Add(content.Substring(sp[0], sp[1] - sp[0]));
+            }
+        }
+
+        var calls = new JArr();
+        var drop = new List<int[]>();       // 必须从正文里摘掉的区间
+        bool badCall = false;               // 存在「像调用但解析不出来」的块
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            string inner = inners[i];
+            bool inFence = InCodeFence(content, blocks[i][0]);
+            bool looksCall = ToolMarkup.LooksLikeToolCallJson(inner);
+            var raw = ParseToolCalls(inner);
+            var parsed = FilterCalls(raw, allowedNames);
             // 没有声明工具列表时无法按名字甄别：代码块里的「示例」一律按正文处理
             // （正常调用不会被包在代码块里——提示词规则 5 已明确禁止）。
-            if (!hasList && InCodeFence(content, ranges[i][0])) parsed = null;
-            if (parsed != null && parsed.Count > 0)
+            bool accepted = parsed != null && parsed.Count > 0 && !(!hasList && inFence);
+            if (accepted)
+            {
                 for (int k = 0; k < parsed.Count; k++) calls.Add(parsed[k]);
+                drop.Add(blocks[i]);
+            }
+            else if (looksCall)
+            {
+                bool parseFailed = raw == null || raw.Count == 0;
+                bool realNameNotAllowed = !parseFailed && hasList && HasRealLookingName(raw);
+                if (parseFailed || realNameNotAllowed)
+                {
+                    // ★ 关键修复：块「像工具调用」却用不了（JSON 写坏 / 被截断 / 名字写错）
+                    //   → 整块摘除。旧实现把坏 JSON 原样留在正文里，这正是「工具调用漏进正文」的根因。
+                    drop.Add(blocks[i]);
+                    badCall = true;
+                    Log.Write("工具调用块不可用，已丢弃以免泄漏: " + Brief(inner));
+                }
+                // 否则：正文里举例说明（名字是占位符，如「工具名」）→ 原样保留
+            }
+            // 否则：正文里对标记的讨论 → 原样保留
         }
 
         if (calls.Count == 0)
         {
-            // 没有有效调用（模型在正文里描述/举例，或调用块被写坏）：正文语义照常保留，
-            // 但**标记残片绝不许上屏** —— 这是修「工具标记漏进正文」的关键一步。
-            r.content = ToolMarkup.StripStray(content);
-            if (ranges.Count > 0 || ToolMarkup.EarliestSignal(content) >= 0) r.toolError = "NOT_A_TOOL_CALL";
+            r.content = ToolMarkup.StripStray(ToolMarkup.RemoveSpans(content, drop));
+            r.droppedSpans = drop;
+            if (badCall)
+            {
+                r.toolError = "TOOL_PARSE_FAILED";
+                // 静默空回复最危险（用户/宿主以为"正常结束"）：给一句明确提示，原文只进日志。
+                if (r.content.Trim().Length == 0) r.content = "[工具调用格式异常，已丢弃以免泄漏到正文，请重试]";
+            }
+            else if (blocks.Count > 0 || ToolMarkup.EarliestSignal(content) >= 0) r.toolError = "NOT_A_TOOL_CALL";
             return r;
         }
 
-        // ② 有有效调用：把所有块从正文里摘掉，块间/块后的正文保留
-        string rest = RemoveRanges(content, ranges);
-        r.content = ToolMarkup.StripStray(rest).Trim();
+        // ③ 有有效调用：把所有块从正文里摘掉，块间/块后的正文保留
+        // 既然这一轮确实有调用，所有候选块（含写坏的那个）一律摘掉，避免任何残片漏网
+        r.content = ToolMarkup.StripStray(ToolMarkup.RemoveSpans(content, blocks)).Trim();
+        r.droppedSpans = blocks;
         ToolArgsFixer.Fix(calls, toolSchema);   // ★ 按声明类型归一化参数（string 参数不得传对象）
         r.toolCalls = calls;
         r.finishReason = "tool_calls";
         return r;
+    }
+
+    /// <summary>解析结果里是否存在「像真工具名」的名字（区分写错名的调用与正文占位符举例）。</summary>
+    private static bool HasRealLookingName(JArr raw)
+    {
+        if (raw == null) return false;
+        foreach (var it in raw.Items)
+        {
+            var o = it as JObj;
+            if (o != null && LooksLikeToolName(o.Str("name", "").Trim())) return true;
+        }
+        return false;
+    }
+
+    private static string Brief(string s)
+    {
+        if (s == null) return "";
+        s = s.Replace("\r", " ").Replace("\n", " ");
+        return s.Length <= 160 ? s : s.Substring(0, 160) + "...";
+    }
+
+    /// <summary>定位「没有标记的裸 JSON 工具调用块」的区间（配平扫描；截断则吃到文末）。</summary>
+    private static List<int[]> FindBareJsonSpans(string content)
+    {
+        var outp = new List<int[]>();
+        foreach (Match m in ToolMarkup.BareJsonSigRe.Matches(content))
+        {
+            int start = m.Index;
+            if (outp.Count > 0 && start < outp[outp.Count - 1][1]) continue;   // 与上一块重叠
+            int end = JsonRepair.BalancedEnd(content, start);
+            if (end < 0) end = content.Length;                                 // 截断 → 吃到文末
+            outp.Add(new[] { start, end });
+            if (outp.Count >= 4) break;
+        }
+        return outp;
+    }
+
+    /// <summary>把「绝对区间」裁到 tail（起始于 offset）内并移除 —— 流式收尾补发时用。</summary>
+    public static string CutSpans(string tail, int offset, List<int[]> spans)
+    {
+        if (string.IsNullOrEmpty(tail) || spans == null || spans.Count == 0) return tail;
+        var rel = new List<int[]>();
+        foreach (var sp in spans)
+        {
+            int s0 = Math.Max(sp[0], offset) - offset;
+            int e0 = Math.Min(sp[1], offset + tail.Length) - offset;
+            if (e0 > s0) rel.Add(new[] { s0, e0 });
+        }
+        return ToolMarkup.RemoveSpans(tail, rel);
     }
 
     /// <summary>从文本里移除若干 [start, end) 区间，拼接剩余部分。</summary>
@@ -156,7 +248,53 @@ public static class OpenAiAdapter
         // 去掉可能的代码围栏
         s = Regex.Replace(s, "^```[a-zA-Z0-9]*\\s*", "");
         s = Regex.Replace(s, "```\\s*$", "").Trim();
+        if (s.Length == 0) return null;
 
+        // 多候选：原文 → 结构补括号 → 全角归一 → 全角归一+补括号。
+        // 顺序有讲究：不改动内容的候选优先，改动越大的越靠后。
+        var cands = new List<string> { s };
+        var rb = JsonRepair.TryRebuild(s);
+        if (rb != null && rb != s) cands.Add(rb);
+        var fw = JsonRepair.NormalizeFullWidth(s);
+        if (fw != s)
+        {
+            cands.Add(fw);
+            var rb2 = JsonRepair.TryRebuild(fw);
+            if (rb2 != null && rb2 != fw) cands.Add(rb2);
+        }
+        foreach (string cand in cands)
+        {
+            var res = ParseCore(cand);
+            // ⚠️ 必须校验「名字健全」：宽松解析器对**未修复的原文**也能吐出一个
+            //   乱码调用名（如 `pwsh\",\"arguments\":{...`），若就此返回，就会短路掉
+            //   后面真正能修好的候选（实测：全角冒号样本因此救不回来）。
+            if (res != null && res.Count > 0 && NamesSane(res)) return res;
+        }
+        return null;
+    }
+
+    /// <summary>调用名是否「像真的工具名」（拦掉宽松解析产生的乱码名）。</summary>
+    private static bool NamesSane(JArr calls)
+    {
+        if (calls == null) return false;
+        foreach (var it in calls.Items)
+        {
+            var o = it as JObj;
+            if (o == null) return false;
+            string n = o.Str("name", "").Trim();
+            if (n.Length == 0 || n.Length > 128) return false;
+            foreach (char c in n)
+            {
+                if (char.IsWhiteSpace(c) || c == '"' || c == '\'' || c == '\\' || c == '{' || c == '}'
+                    || c == '[' || c == ']' || c == ',' || c == '：' || c == '，') return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>对**单一候选文本**多级解析（严格 → 宽松 → 逐对象提取）。</summary>
+    private static JArr ParseCore(string s)
+    {
         // 1) 严格解析：整段 JSON 数组
         int lb = s.IndexOf('['), rb = s.LastIndexOf(']');
         if (lb >= 0 && rb > lb)
@@ -164,7 +302,7 @@ public static class OpenAiAdapter
             var a = TryArray(s.Substring(lb, rb + 1 - lb));
             if (a != null) { var nn = NormalizeCalls(a); if (nn.Count > 0) return nn; }
         }
-        // 2) 严格解析：整段文本 / 单个对象
+        // 2) 严格解析：整段文本 / 单个对象（含 {"tool_calls":[…]} 包装）
         var a2 = TryArray(s);
         if (a2 != null) { var nn = NormalizeCalls(a2); if (nn.Count > 0) return nn; }
         var o2 = TryObject(s);
@@ -187,6 +325,16 @@ public static class OpenAiAdapter
 
     private static JArr WrapCalls(JObj o)
     {
+        // {"tool_calls":[…]} / {"function_calls":[…]} 这类**包装层**：直接取内层数组
+        foreach (string k in new[] { "tool_calls", "tool_call", "function_calls", "calls" })
+        {
+            var v = o.Get(k);
+            if (v is JArr arr)
+            {
+                var nn0 = NormalizeCalls(arr);
+                if (nn0.Count > 0) return nn0;
+            }
+        }
         var a = new JArr();
         a.Add(o);
         return NormalizeCalls(a);
@@ -274,6 +422,8 @@ public static class OpenAiAdapter
     /// <summary>各种形态的 arguments 统一成「对象」；实在解析不出则把原始文本存入 _raw_args。</summary>
     private static void PutArgs(JObj call, JVal args)
     {
+        // 模型把 arguments 套成了一层数组 [{…}]（实测：arguments 写成数组后 ]/} 顺序错乱）→ 取唯一元素
+        if (args is JArr arr1 && arr1.Count == 1 && arr1[0] is JObj) args = arr1[0];
         if (args is JObj || args is JArr)
         {
             call.Set("arguments", LooseJson.NormalizeJsonStrings(args));

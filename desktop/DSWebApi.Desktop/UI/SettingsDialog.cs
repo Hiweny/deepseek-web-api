@@ -82,6 +82,8 @@ internal sealed class SettingsDialog : Form
         BoolRow(grid, "上下文达阈值自动新开对话", () => Prefs.AutoNewChat, v => Prefs.AutoNewChat = v);
         TextRow(grid, "上下文上限（tokens）", () => Prefs.ContextTokens.ToString(), v => { if (int.TryParse(v, out var t) && t >= 8000) Prefs.ContextTokens = t; });
         TextRow(grid, "新对话阈值（%）", () => Prefs.NewChatThreshold.ToString(), v => { if (int.TryParse(v, out var t) && t >= 10 && t <= 100) Prefs.NewChatThreshold = t; });
+        TextRow(grid, "单次输入字符上限（0=不限）", () => Prefs.MaxPromptChars.ToString(), v => { if (int.TryParse(v, out var t) && t >= 0) { Prefs.MaxPromptChars = t; Note("超出时自动省略中段历史，保留系统指令与最近对话"); } });
+        TextRow(grid, "图片附件数量上限（0=不限）", () => Prefs.MaxRefImages.ToString(), v => { if (int.TryParse(v, out var t) && t >= 0) { Prefs.MaxRefImages = t; Note("超出时只保留最近上传的 N 张图片"); } });
 
         Header(grid, "桌面行为");
         BoolRow(grid, "关闭窗口即最小化到托盘", () => Prefs.CloseToTray, v => Prefs.CloseToTray = v);
