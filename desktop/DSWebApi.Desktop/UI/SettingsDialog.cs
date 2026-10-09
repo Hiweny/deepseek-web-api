@@ -1,4 +1,4 @@
-using DSWebApi.Desktop.Core;
+﻿using DSWebApi.Desktop.Core;
 
 namespace DSWebApi.Desktop.UI;
 
@@ -51,6 +51,29 @@ internal sealed class SettingsDialog : Form
         TextRow(grid, "API Key", () => Prefs.ApiKey, v => Prefs.ApiKey = v.Trim());
         TextRow(grid, "单次调用超时（秒）", () => Prefs.TimeoutSec.ToString(), v => { if (int.TryParse(v, out var t) && t >= 10 && t <= 3600) Prefs.TimeoutSec = t; });
         BoolRow(grid, "允许局域网访问（0.0.0.0）", () => Prefs.LanEnabled, v => { Prefs.LanEnabled = v; Note("重启服务后生效"); });
+
+        Header(grid, "内网穿透（Cloudflare Tunnel · 免费）");
+        BoolRow(grid, "启用公网访问（固定域名）", () => Prefs.TunnelEnabled, v =>
+        {
+            Prefs.TunnelEnabled = v;
+            if (v) CloudflareTunnel.I.StartAsync(); else CloudflareTunnel.I.Stop();
+            Note(v ? "正在建立公网隧道，公网地址见主界面「接口信息」" : "已停止公网隧道");
+        });
+        TextRow(grid, "公网域名", () => Prefs.TunnelHostname, v =>
+        {
+            Prefs.TunnelHostname = v.Trim();
+            Note("换了域名后：关一下再开「启用公网访问」即可重新绑定");
+        });
+        TextRow(grid, "Cloudflare API Token", () => Prefs.TunnelApiToken, v =>
+        {
+            Prefs.TunnelApiToken = v.Trim();
+            Note("Token 只保存在本机设置文件，不会外传");
+        });
+        TextRow(grid, "cloudflared.exe 路径", () => Prefs.CloudflaredPath, v =>
+        {
+            Prefs.CloudflaredPath = v.Trim();
+            Note("留空则在启用时自动下载到数据目录");
+        });
 
         Header(grid, "对话策略");
         BoolRow(grid, "无状态模式（每轮不带历史）", () => Prefs.Stateless, v => Prefs.Stateless = v);

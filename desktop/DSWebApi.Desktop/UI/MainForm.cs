@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using DSWebApi.Desktop.Core;
 using Microsoft.Web.WebView2.Core;
@@ -69,7 +69,7 @@ public sealed class MainForm : Form
     private bool _balloonShown;
 
     private Label _vState, _vWeb, _vLogin;
-    private Label _vBase, _vLan, _vKey;
+    private Label _vBase, _vLan, _vKey, _vPub;
     private Label _vCalls, _vCtx, _vLast;
     private Label _sideState;
 
@@ -125,6 +125,8 @@ public sealed class MainForm : Form
             try { BeginInvoke(new Action(() => { ApplyDarkChrome(); RefreshAccounts(); })); } catch { }
             StartUiSizeAudit();
             ChatEngine.I.StartAll(Prefs.Port);
+            CloudflareTunnel.I.Changed += () => { try { BeginInvoke(new Action(RefreshStats)); } catch { } };
+            if (Prefs.TunnelEnabled) CloudflareTunnel.I.StartAsync();
             RefreshStats();
             _ = InitWebAsync();
             if (_startMinimized) MinimizeToTray(true);
@@ -466,7 +468,7 @@ public sealed class MainForm : Form
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        int[] rows = { 46, 30, 122, 310, 212, 280, 244, 12 };
+        int[] rows = { 46, 30, 122, 382, 212, 280, 244, 12 };
         foreach (var r in rows) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, (int)(r * _s)));
         host.Controls.Add(grid);
 
@@ -517,16 +519,19 @@ public sealed class MainForm : Form
         grid.SetColumnSpan(tiles, 2);
 
         /* 接口信息 */
-        var c1 = Card("接口信息", 298);
+        var c1 = Card("接口信息", 370);
         int y = (int)(56 * _s);
         _vBase = KV(c1, "本机地址", ref y);
         _vLan = KV(c1, "局域网地址", ref y);
+        _vPub = KV(c1, "公网地址", ref y);
         _vKey = KV(c1, "API Key", ref y);
         var b1 = BtnRow(
             ("复制本机地址", (s2, e2) => Copy(BaseUrl(true))),
             ("复制 API Key", (s2, e2) => Copy(Prefs.ApiKey)),
-            ("复制局域网地址", (s2, e2) => Copy(BaseUrl(false))));
-        b1.Left = Pad; b1.Top = y + (int)(12 * _s); b1.Width = (int)(520 * _s);
+            ("复制局域网地址", (s2, e2) => Copy(BaseUrl(false))),
+            ("复制公网地址", (s2, e2) => Copy(PublicUrl())),
+            ("打开公网地址", (s2, e2) => OpenUrl(PublicUrl())));
+        b1.Left = Pad; b1.Top = y + (int)(12 * _s); b1.Width = (int)(640 * _s); b1.Height = (int)(112 * _s);
         c1.Controls.Add(b1);
         c1.Resize += (s2, e2) => FitTracked(c1);
         grid.Controls.Add(c1, 0, 3);
@@ -896,6 +901,8 @@ public sealed class MainForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("启动服务", null, (s, e) => { ChatEngine.I.StartAll(Prefs.Port); RefreshStats(); });
         menu.Items.Add("停止服务", null, (s, e) => { ChatEngine.I.StopAll(); RefreshStats(); });
+        menu.Items.Add("启动公网隧道", null, (s, e) => { Prefs.TunnelEnabled = true; CloudflareTunnel.I.StartAsync(); RefreshStats(); });
+        menu.Items.Add("停止公网隧道", null, (s, e) => { Prefs.TunnelEnabled = false; CloudflareTunnel.I.Stop(); RefreshStats(); });
         menu.Items.Add("打开设置…", null, (s, e) => { ShowFromTray(); ShowSettings(); });
         menu.Items.Add("打开日志", null, (s, e) => OpenFile(Log.FilePath));
         menu.Items.Add(new ToolStripSeparator());
@@ -1015,11 +1022,19 @@ public sealed class MainForm : Form
             if (_vLast != null) _vLast.Text = eng.LastCallInfo;
             if (_vBase != null) _vBase.Text = "http://127.0.0.1:" + eng.Port + "/v1";
             if (_vLan != null) _vLan.Text = string.IsNullOrEmpty(eng.LanUrl) ? "—" : eng.LanUrl;
+            if (_vPub != null)
+            {
+                var tun = CloudflareTunnel.I;
+                _vPub.Text = !Prefs.TunnelEnabled ? "未启用（在「设置」里开启）"
+                    : (tun.PublicUrl.Length > 0 ? tun.PublicUrl + "/v1　[" + tun.State + "]"
+                                               : "[" + tun.State + "]");
+            }
             if (_vKey != null) _vKey.Text = Prefs.ApiKey;
             if (_sideState != null)
                 _sideState.Text = (eng.ServiceRunning ? "运行中" : "已停止")
                     + " · 端口 " + (eng.Port > 0 ? eng.Port : Prefs.Port) + "\r\n"
                     + "局域网 " + (Prefs.LanEnabled ? "开" : "关")
+                    + " · 公网 " + (!Prefs.TunnelEnabled ? "关" : (CloudflareTunnel.I.Running ? "已连接" : "连接中"))
                     + " · 轮换 " + (Prefs.RotateEnabled ? "第 " + AccountPool.I.CycleNo + " 轮" : "关");
             if (_tray != null && _tray.Visible)
             {
@@ -1036,6 +1051,19 @@ public sealed class MainForm : Form
     {
         if (!local && Prefs.LanEnabled && ChatEngine.I.LanUrl.Length > 0) return ChatEngine.I.LanUrl;
         return "http://127.0.0.1:" + (ChatEngine.I.Port > 0 ? ChatEngine.I.Port : Prefs.Port) + "/v1";
+    }
+
+    /// <summary>公网地址（Cloudflare Tunnel）；未启用/未连接时返回空串。</summary>
+    private string PublicUrl()
+    {
+        string u = CloudflareTunnel.I.PublicUrl;
+        return string.IsNullOrEmpty(u) ? "" : u + "/v1";
+    }
+
+    private void OpenUrl(string url)
+    {
+        if (string.IsNullOrEmpty(url)) { MessageBox.Show("公网隧道尚未连接。请在「设置」里填好 API Token 与公网域名并启用。", Program.AppName); return; }
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
     }
 
     private void NewChat()
@@ -1149,6 +1177,7 @@ public sealed class MainForm : Form
         try { if (_tray != null) { _tray.Visible = false; _tray.Dispose(); } } catch { }
         try { _web?.Dispose(); } catch { }
         try { ChatEngine.I.StopAll(); } catch { }
+        try { CloudflareTunnel.I.Stop(); } catch { }
         base.OnFormClosing(e);
     }
 

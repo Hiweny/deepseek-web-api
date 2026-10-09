@@ -101,4 +101,16 @@ public static class Prefs
 
     /// <summary>界面缩放百分比（等比放大整套 UI 的字号与控件）。</summary>
     public static int UiScalePct { get => GetInt("ui_scale_pct", 100); set => Set("ui_scale_pct", value); }
+
+    /* ---- 内网穿透（Cloudflare Tunnel，桌面端特有） ---- */
+    /// <summary>是否启用公网访问（Cloudflare Tunnel）。</summary>
+    public static bool TunnelEnabled { get => GetBool("tunnel_enabled", false); set => Set("tunnel_enabled", value); }
+    /// <summary>Cloudflare API Token（只保存在本机设置文件，勿外传）。</summary>
+    public static string TunnelApiToken { get => GetStr("tunnel_api_token", ""); set => Set("tunnel_api_token", value ?? ""); }
+    /// <summary>公网域名（如 ds.hiweny.kdns.fr）。换了域名改这里即可，下次启动自动重新绑定。</summary>
+    public static string TunnelHostname { get => GetStr("tunnel_hostname", "ds.hiweny.kdns.fr"); set => Set("tunnel_hostname", value ?? ""); }
+    /// <summary>上次使用的隧道 id（缓存）。</summary>
+    public static string TunnelId { get => GetStr("tunnel_id", ""); set => Set("tunnel_id", value ?? ""); }
+    /// <summary>cloudflared.exe 路径（留空=自动下载到数据目录）。</summary>
+    public static string CloudflaredPath { get => GetStr("cloudflared_path", ""); set => Set("cloudflared_path", value ?? ""); }
 }
