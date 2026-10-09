@@ -35,11 +35,31 @@ public final class PromptBuilder {
         public boolean hasTools = false;
         /** 本次请求声明的工具名（用于甄别「正文里解释标记」的误判）。 */
         public final List<String> toolNames = new ArrayList<>();
+        /** 本次因超长被中段截断（正文里已插省略标记）。 */
+        public boolean truncated = false;
+        /** 截断时被省略的字符数。 */
+        public long omittedChars = 0;
+        /** 因超出附件数量上限被略过的图片数。 */
+        public int omittedImages = 0;
     }
 
     private PromptBuilder() {}
 
-    public static Result build(JSONObject req, boolean stateless) {
+    public static Result build(JSONObject req, boolean stateless) { return build(req, stateless, 0, 0); }
+
+    /**
+     * 按上限构建 prompt：
+     *   maxChars &gt; 0     → 超长时「中段截断」（保留系统指令/工具协议 + 最近对话）
+     *   maxRefImages &gt; 0 → 图片附件只保留最近 N 张
+     * 目的是避免前端把超长工具结果塞进下一轮，撞上网页端「输入上限 / 附件数量上限」而报调用错误。
+     */
+    public static Result build(JSONObject req, boolean stateless, int maxChars, int maxRefImages) {
+        Result r = buildCore(req, stateless);
+        fit(r, maxChars, maxRefImages);
+        return r;
+    }
+
+    private static Result buildCore(JSONObject req, boolean stateless) {
         Result r = new Result();
         JSONArray messages = req.optJSONArray("messages");
         if (messages == null || messages.length() == 0) { r.text = ""; return r; }
@@ -97,6 +117,56 @@ public final class PromptBuilder {
         sb.append(body);
         r.text = sb.toString().trim();
         return r;
+    }
+
+    /** 上限保护：附件只留最近 N 张；prompt 超长则中段截断（保留系统指令/工具协议与最近对话）。 */
+    private static void fit(Result r, int maxChars, int maxRefImages) {
+        // ① 附件数量上限：网页端对一批引用的数量有硬上限，越过会让该会话此后每一轮都失败
+        if (maxRefImages > 0 && r.attachments.size() > maxRefImages) {
+            r.omittedImages = r.attachments.size() - maxRefImages;
+            for (int i = 0; i < r.omittedImages; i++) r.attachments.remove(0);   // 丢弃最早的
+        }
+        // ② 字符预算：中段截断
+        if (maxChars > 0) fitChars(r, maxChars);
+    }
+
+    private static void fitChars(Result r, int maxChars) {
+        String text = r.text == null ? "" : r.text;
+        if (text.length() <= maxChars) return;
+        final int RESERVE = 160;                       // 省略标记预留
+        long budget = Math.max(512, maxChars - RESERVE);
+
+        // head = 从「【系统指令】」到第一个空行（系统提示 + 工具协议），尽量完整保留，避免工具 schema 被截半
+        String head = "";
+        String body = text;
+        if (text.startsWith("\u3010系统指令\u3011")) {
+            int cut = text.indexOf("\n\n", 6);
+            if (cut > 0) { head = text.substring(0, cut); body = text.substring(cut + 2); }
+        }
+        long headBudget = Math.min(head.length(), (long) Math.floor(budget * 0.45));
+        long bodyBudget = budget - headBudget;
+        if (bodyBudget < 0) bodyBudget = 0;
+
+        String headOut = head.length() > headBudget ? head.substring(0, (int) headBudget) : head;
+        String bodyOut = body;
+        if (body.length() > bodyBudget) {
+            int keep = (int) bodyBudget;
+            int start = body.length() - keep;               // 保留尾部（最近回合）
+            int nl = body.indexOf("\n\n", start);
+            if (nl >= 0 && nl - start <= 800) start = nl + 2;
+            else { int nl2 = body.indexOf('\n', start); if (nl2 >= 0 && nl2 - start <= 240) start = nl2 + 1; }
+            if (start < 0) start = 0;
+            if (start > body.length()) start = body.length();
+            bodyOut = body.substring(start);
+        }
+        long omitted = (head.length() - headOut.length()) + (body.length() - bodyOut.length());
+        StringBuilder sb = new StringBuilder();
+        if (headOut.length() > 0) sb.append(headOut).append("\n\n");
+        sb.append("[上下文过长：已自动省略约 ").append(omitted).append(" 字符，仅保留系统指令与最近对话]\n\n");
+        sb.append(bodyOut);
+        r.text = sb.toString().trim();
+        r.truncated = true;
+        r.omittedChars = omitted;
     }
 
     private static String buildStateless(JSONArray messages, String toolBlock, String formatBlock, Result r) {

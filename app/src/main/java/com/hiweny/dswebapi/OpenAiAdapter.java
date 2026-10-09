@@ -6,8 +6,9 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Matcher;
 
-/** OpenAI 兼容协议的请求/响应转换与工具调用解析。 */
+/** OpenAI 兼容协议的请求/响应转换与工具调用解析（与桌面端 Core/OpenAiAdapter.cs 对齐）。 */
 public final class OpenAiAdapter {
 
     private OpenAiAdapter() {}
@@ -24,6 +25,8 @@ public final class OpenAiAdapter {
         public String finishReason = "stop";
         /** 工具块存在但解析失败时置位，避免把标记泄漏到正文。 */
         public String toolError = "";
+        /** 已被摘除（判定为工具调用 / 写坏的调用块）的区间，供流式收尾补发时裁掉。 */
+        public List<int[]> droppedSpans = null;
     }
 
     /** 标签归一化（1:1 字符映射，长度不变，索引可对齐）：｜->|，▁->_ */
@@ -36,25 +39,16 @@ public final class OpenAiAdapter {
         return process(thinkingText, contentText, null);
     }
 
-    /**
-     * 从模型输出文本中解析工具调用；返回的 content 为剔除工具块后的正文。
-     *
-     * <p>只有当标记块内确实是「结构合法、且工具名来自本次请求声明的列表」的工具调用时，
-     * 才按工具调用处理；否则一律视为普通正文原样返回（不在正文里吞内容）。
-     * 这样才能区分「真的调用工具」与「模型在正文里解释/举例这个标记」。
-     *
-     * @param allowedNames 本次请求声明的工具名集合，可为 null（表示不校验名字）
-     */
     public static ChatResult process(String thinkingText, String contentText, java.util.Set<String> allowedNames) {
         return process(thinkingText, contentText, allowedNames, null);
     }
 
     /**
-     * 增加 tools：按工具声明的 JSON Schema 归一化参数。
+     * 从模型输出文本中解析工具调用；返回的 content 为剔除工具块后的正文。
      *
-     * <p>声明为 string 的参数，如果模型写成了对象/数组，会序列化成「只转义一层」的字符串，
-     * 以适配宿主侧「再解析一次 JSON」的约定（见 {@link ToolArgsFixer}）；
-     * 声明为 object/array 的参数保持原样，不会被反向改写。
+     * <p>只有「结构合法、且工具名来自本次请求声明的列表」的调用才生效；
+     * 块「像调用却用不了」（JSON 写坏 / 被截断 / 名字写错）一律<b>整块摘除</b>，
+     * 绝不把坏 JSON 留在正文里 —— 这正是「工具调用漏进正文」的根因。
      *
      * @param tools 本次请求声明的工具定义（可为 null）
      */
@@ -65,57 +59,128 @@ public final class OpenAiAdapter {
         String content = contentText == null ? "" : contentText;
         if (content.isEmpty()) return r;
 
-        // ① 用**宽容正则**扫描所有工具块（覆盖竖线半角/全角、分隔符 _/▁/空格、大小写等变体，
-        //    以及只有 begin 没有 end 的截断块）。旧实现用精确 indexOf，只认一种形态，
-        //    变体与残片会整段落进正文 —— 这就是「工具标记漏进正文」的根因。
-        java.util.List<int[]> ranges = new java.util.ArrayList<int[]>();
-        java.util.List<String> inners = new java.util.ArrayList<String>();
+        boolean hasList = allowedNames != null && !allowedNames.isEmpty();
+
+        // ① 候选块 A：**带标记**的工具块（宽容正则，含只有 begin 没有 end 的截断块）
+        List<int[]> blocks = new ArrayList<int[]>();
+        List<String> inners = new ArrayList<String>();
         int pos = 0;
         while (pos < content.length()) {
-            java.util.regex.Matcher mb = ToolMarkup.BEGIN.matcher(content);
+            Matcher mb = ToolMarkup.BEGIN.matcher(content);
             if (!mb.find(pos)) break;
             int start = mb.start();
             int afterBegin = mb.end();
-            java.util.regex.Matcher me = ToolMarkup.END.matcher(content);
+            Matcher me = ToolMarkup.END.matcher(content);
             int endEx;
             String inner;
             if (me.find(afterBegin)) { endEx = me.end(); inner = content.substring(afterBegin, me.start()); }
             else { endEx = content.length(); inner = content.substring(afterBegin); }
-            ranges.add(new int[]{start, endEx});
+            blocks.add(new int[]{start, endEx});
             inners.add(inner);
             pos = endEx;
         }
 
-        boolean hasList = allowedNames != null && !allowedNames.isEmpty();
+        // ② 候选块 B：**没有标记的裸 JSON**（模型漏写标记时的兜底）。仅当客户端确实声明了工具时才启用。
+        if (hasList && blocks.isEmpty()) {
+            for (int[] sp : findBareJsonSpans(content)) {
+                blocks.add(sp);
+                inners.add(content.substring(sp[0], sp[1]));
+            }
+        }
+
         JSONArray calls = new JSONArray();
-        for (int i = 0; i < inners.size(); i++) {
-            JSONArray parsed = filterCalls(parseToolCalls(inners.get(i)), allowedNames);
+        List<int[]> drop = new ArrayList<int[]>();   // 必须从正文里摘掉的区间
+        boolean badCall = false;                      // 存在「像调用但解析不出来」的块
+        for (int i = 0; i < blocks.size(); i++) {
+            String inner = inners.get(i);
+            boolean inFence = inCodeFence(content, blocks.get(i)[0]);
+            boolean looksCall = ToolMarkup.looksLikeToolCallJson(inner);
+            JSONArray raw = parseToolCalls(inner);
+            JSONArray parsed = filterCalls(raw, allowedNames);
             // 没有声明工具列表时无法按名字甄别：代码块里的「示例」一律按正文处理
-            if (!hasList && inCodeFence(content, ranges.get(i)[0])) parsed = null;
-            if (parsed != null) {
+            boolean accepted = parsed != null && parsed.length() > 0 && !(!hasList && inFence);
+            if (accepted) {
                 for (int k = 0; k < parsed.length(); k++) calls.put(parsed.opt(k));
+                drop.add(blocks.get(i));
+            } else if (looksCall) {
+                boolean parseFailed = raw == null || raw.length() == 0;
+                boolean realNameNotAllowed = !parseFailed && hasList && hasRealLookingName(raw);
+                if (parseFailed || realNameNotAllowed) {
+                    // ★ 关键修复：块「像工具调用」却用不了 → 整块摘除（旧实现把坏 JSON 留在正文＝泄漏根因）
+                    drop.add(blocks.get(i));
+                    badCall = true;
+                    Util.log("工具调用块不可用，已丢弃以免泄漏: " + brief(inner));
+                }
+                // 否则：正文里举例说明（名字是占位符，如「工具名」）→ 原样保留
             }
         }
 
         if (calls.length() == 0) {
-            // 没有有效调用（模型在正文里描述/举例，或调用块被写坏）：正文语义照常保留，
-            // 但**标记残片绝不许上屏** —— 这是修「工具标记漏进正文」的关键一步。
-            r.content = ToolMarkup.stripStray(content);
-            if (!ranges.isEmpty() || ToolMarkup.earliestSignal(content) >= 0) r.toolError = "NOT_A_TOOL_CALL";
+            r.content = ToolMarkup.stripStray(ToolMarkup.removeSpans(content, drop));
+            r.droppedSpans = drop;
+            if (badCall) {
+                r.toolError = "TOOL_PARSE_FAILED";
+                if (r.content.trim().isEmpty()) r.content = "[工具调用格式异常，已丢弃以免泄漏到正文，请重试]";
+            } else if (!blocks.isEmpty() || ToolMarkup.earliestSignal(content) >= 0) {
+                r.toolError = "NOT_A_TOOL_CALL";
+            }
             return r;
         }
 
-        // ② 有有效调用：把所有块从正文里摘掉，块间/块后的正文保留
-        String rest = removeRanges(content, ranges);
-        r.content = ToolMarkup.stripStray(rest).trim();
+        // ③ 有有效调用：所有候选块（含写坏的那个）一律摘掉，避免任何残片漏网
+        r.content = ToolMarkup.stripStray(ToolMarkup.removeSpans(content, blocks)).trim();
+        r.droppedSpans = blocks;
         ToolArgsFixer.fix(calls, tools);   // ★ 按声明类型归一化参数（string 参数不得传对象）
         r.toolCalls = calls;
         r.finishReason = "tool_calls";
         return r;
     }
 
+    /** 解析结果里是否存在「像真工具名」的名字（区分写错名的调用与正文占位符举例）。 */
+    private static boolean hasRealLookingName(JSONArray raw) {
+        if (raw == null) return false;
+        for (int i = 0; i < raw.length(); i++) {
+            JSONObject o = raw.optJSONObject(i);
+            if (o != null && looksLikeToolName(o.optString("name", "").trim())) return true;
+        }
+        return false;
+    }
+
+    private static String brief(String s) {
+        if (s == null) return "";
+        s = s.replace("\r", " ").replace("\n", " ");
+        return s.length() <= 160 ? s : s.substring(0, 160) + "...";
+    }
+
+    /** 定位「没有标记的裸 JSON 工具调用块」的区间（配平扫描；截断则吃到文末）。 */
+    private static List<int[]> findBareJsonSpans(String content) {
+        List<int[]> out = new ArrayList<int[]>();
+        Matcher m = ToolMarkup.BARE_JSON_SIG.matcher(content);
+        while (m.find()) {
+            int start = m.start();
+            if (!out.isEmpty() && start < out.get(out.size() - 1)[1]) continue;   // 与上一块重叠
+            int end = JsonRepair.balancedEnd(content, start);
+            if (end < 0) end = content.length();                                   // 截断 → 吃到文末
+            out.add(new int[]{start, end});
+            if (out.size() >= 4) break;
+        }
+        return out;
+    }
+
+    /** 把「绝对区间」裁到 tail（起始于 offset）内并移除 —— 流式收尾补发时用。 */
+    public static String cutSpans(String tail, int offset, List<int[]> spans) {
+        if (tail == null || tail.isEmpty() || spans == null || spans.isEmpty()) return tail;
+        List<int[]> rel = new ArrayList<int[]>();
+        for (int[] sp : spans) {
+            int s0 = Math.max(sp[0], offset) - offset;
+            int e0 = Math.min(sp[1], offset + tail.length()) - offset;
+            if (e0 > s0) rel.add(new int[]{s0, e0});
+        }
+        return ToolMarkup.removeSpans(tail, rel);
+    }
+
     /** 从文本里移除若干 [start, end) 区间，拼接剩余部分。 */
-    private static String removeRanges(String text, java.util.List<int[]> ranges) {
+    private static String removeRanges(String text, List<int[]> ranges) {
         if (ranges.isEmpty()) return text;
         StringBuilder sb = new StringBuilder();
         int cur = 0;
@@ -141,55 +206,112 @@ public final class OpenAiAdapter {
 
     /**
      * 只保留「结构完整（有 name）」且「名字确实在本次声明的工具列表里」的调用。
-     * 列表为空时不做名字校验（部分客户端不传 tools）。
+     * 列表为空时：占位名（含空白 / 中日韩文字，如「工具名」）不算真实工具名。
      */
     private static JSONArray filterCalls(JSONArray calls, java.util.Set<String> allowedNames) {
         if (calls == null) return null;
+        boolean hasList = allowedNames != null && !allowedNames.isEmpty();
         JSONArray out = new JSONArray();
         for (int i = 0; i < calls.length(); i++) {
             JSONObject c = calls.optJSONObject(i);
             if (c == null) continue;
             String name = c.optString("name", "").trim();
             if (name.isEmpty()) continue;
-            if (allowedNames != null && !allowedNames.isEmpty()) {
+            if (hasList) {
                 boolean hit = false;
                 for (String n : allowedNames) {
                     if (n != null && n.trim().equalsIgnoreCase(name)) { hit = true; break; }
                 }
                 if (!hit) continue;
+            } else if (!looksLikeToolName(name)) {
+                continue;
             }
             out.put(c);
         }
         return out;
     }
 
-    static JSONArray parseToolCalls(String inner) {
+    /** 真实工具名不会包含空白或中日韩文字（占位符如「工具名 / 工具」会被排除）。 */
+    static boolean looksLikeToolName(String n) {
+        if (n == null || n.isEmpty() || n.length() > 128) return false;
+        for (int i = 0; i < n.length(); i++) {
+            char c = n.charAt(i);
+            if (Character.isWhitespace(c)) return false;
+            if ((c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF)
+                    || (c >= 0xFF00 && c <= 0xFFEF) || (c >= 0x3000 && c <= 0x303F)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * 多候选解析：原文 → 结构补括号 → 全角归一 → 全角归一+补括号。
+     * 顺序有讲究：不改动内容的候选优先，改动越大的越靠后。
+     */
+    public static JSONArray parseToolCalls(String inner) {
         if (inner == null) return null;
         String s = inner.trim();
         // 去掉可能的代码围栏
         s = s.replaceAll("^(?s)```[a-zA-Z0-9]*\\s*", "").replaceAll("(?s)```\\s*$", "").trim();
+        if (s.isEmpty()) return null;
 
-        // 1) 严格解析：整段 JSON 数组（绝大多数正常输出走这里）
+        List<String> cands = new ArrayList<String>();
+        cands.add(s);
+        String rb = JsonRepair.tryRebuild(s);
+        if (rb != null && !rb.equals(s)) cands.add(rb);
+        String fw = JsonRepair.normalizeFullWidth(s);
+        if (!fw.equals(s)) {
+            cands.add(fw);
+            String rb2 = JsonRepair.tryRebuild(fw);
+            if (rb2 != null && !rb2.equals(fw)) cands.add(rb2);
+        }
+        for (String cand : cands) {
+            JSONArray res = parseCore(cand);
+            // ⚠️ 必须校验「名字健全」：宽松解析器对未修复的原文也能吐出乱码调用名，
+            //    若直接返回会短路掉后面真正能修好的候选。
+            if (res != null && res.length() > 0 && namesSane(res)) return res;
+        }
+        return null;
+    }
+
+    /** 调用名是否「像真的工具名」（拦掉宽松解析产生的乱码名）。 */
+    private static boolean namesSane(JSONArray calls) {
+        if (calls == null) return false;
+        for (int i = 0; i < calls.length(); i++) {
+            JSONObject o = calls.optJSONObject(i);
+            if (o == null) return false;
+            String n = o.optString("name", "").trim();
+            if (n.isEmpty() || n.length() > 128) return false;
+            for (int j = 0; j < n.length(); j++) {
+                char c = n.charAt(j);
+                if (Character.isWhitespace(c) || c == '"' || c == '\'' || c == '\\' || c == '{' || c == '}'
+                        || c == '[' || c == ']' || c == ',' || c == '\uFF1A' || c == '\uFF0C') return false;
+            }
+        }
+        return true;
+    }
+
+    /** 对**单一候选文本**多级解析（严格 → 宽松 → 逐对象提取）。 */
+    private static JSONArray parseCore(String s) {
+        // 1) 严格解析：整段 JSON 数组
         int lb = s.indexOf('['), rb = s.lastIndexOf(']');
         if (lb >= 0 && rb > lb) {
             JSONArray a = tryArray(s.substring(lb, rb + 1));
-            if (a != null) { JSONArray n = normalizeCalls(a); if (n.length() > 0) return n; }
+            if (a != null) { JSONArray nn = normalizeCalls(a); if (nn.length() > 0) return nn; }
         }
-        // 2) 严格解析：整段文本 / 单个对象
+        // 2) 严格解析：整段文本 / 单个对象（含 {"tool_calls":[…]} 包装）
         JSONArray a2 = tryArray(s);
-        if (a2 != null) { JSONArray n = normalizeCalls(a2); if (n.length() > 0) return n; }
+        if (a2 != null) { JSONArray nn = normalizeCalls(a2); if (nn.length() > 0) return nn; }
         JSONObject o2 = tryObject(s);
-        if (o2 != null) { JSONArray n = wrapCalls(o2); if (n.length() > 0) return n; }
+        if (o2 != null) { JSONArray nn = wrapCalls(o2); if (nn.length() > 0) return nn; }
 
-        // 3) 宽松解析：修复「嵌套 / 字符串化 JSON」的多层转义错误（回溯 + 自洽择优）
-        //    必须排在 extractObjects 之前：括号切片遇到少转义会产生"语法合法但语义截断"的假对象。
+        // 3) 宽松解析：修复「嵌套 / 字符串化 JSON」的多层转义错误（必须排在 extractObjects 之前）
         JSONArray loose = normalizeLoose(LooseJson.parse(s));
         if (loose != null && loose.length() > 0) return loose;
 
-        // 4) 最后的兜底：逐个提取 {...} 片段，再严格 / 宽松各试一次
+        // 4) 最后的兜底：逐个提取 {...} 片段
         for (String ch : extractObjects(s)) {
             JSONObject o = tryObject(ch);
-            if (o != null) { JSONArray n = wrapCalls(o); if (n.length() > 0) return n; }
+            if (o != null) { JSONArray nn = wrapCalls(o); if (nn.length() > 0) return nn; }
             JSONArray n2 = normalizeLoose(LooseJson.parse(ch));
             if (n2 != null && n2.length() > 0) return n2;
         }
@@ -197,6 +319,15 @@ public final class OpenAiAdapter {
     }
 
     private static JSONArray wrapCalls(JSONObject o) {
+        // {"tool_calls":[…]} / {"function_calls":[…]} 这类**包装层**：直接取内层数组
+        String[] keys = {"tool_calls", "tool_call", "function_calls", "calls"};
+        for (String k : keys) {
+            JSONArray arr = o.optJSONArray(k);
+            if (arr != null) {
+                JSONArray nn0 = normalizeCalls(arr);
+                if (nn0.length() > 0) return nn0;
+            }
+        }
         JSONArray a = new JSONArray();
         a.put(o);
         return normalizeCalls(a);
@@ -255,7 +386,15 @@ public final class OpenAiAdapter {
 
     /** 各种形态的 arguments 统一成「对象」；实在解析不出则把原始文本存入 _raw_args，绝不静默丢弃。 */
     private static void putArgs(JSONObject call, Object args) throws Exception {
-        if (args instanceof JSONObject || args instanceof JSONArray) { call.put("arguments", LooseJson.normalizeJsonStrings(args)); return; }
+        // 模型把 arguments 套成了一层数组 [{…}]（实测：arguments 写成数组后 ]/} 顺序错乱）→ 取唯一元素
+        if (args instanceof JSONArray) {
+            JSONArray arr = (JSONArray) args;
+            if (arr.length() == 1 && arr.opt(0) instanceof JSONObject) args = arr.opt(0);
+        }
+        if (args instanceof JSONObject || args instanceof JSONArray) {
+            call.put("arguments", LooseJson.normalizeJsonStrings(args));
+            return;
+        }
         String as = args == null ? "" : String.valueOf(args).trim();
         if (as.isEmpty() || "{}".equals(as)) { call.put("arguments", new JSONObject()); return; }
         JSONObject ao = tryObject(as);
@@ -268,7 +407,7 @@ public final class OpenAiAdapter {
 
     /** 扫描出顶层 {...} 片段（简易括号计数，忽略字符串内括号）。 */
     private static List<String> extractObjects(String s) {
-        List<String> out = new ArrayList<>();
+        List<String> out = new ArrayList<String>();
         int depth = 0, start = -1;
         boolean inStr = false;
         char q = 0;

@@ -13,6 +13,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.view.WindowManager;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -34,6 +35,9 @@ public class ApiService extends Service {
     private static final String CHANNEL_ID = "dswebapi";
 
     public static volatile boolean serviceRunning = false;
+    private static volatile ApiService sInstance;
+    /** 供界面（悬浮球开关等）访问当前服务实例；未运行时为 null。 */
+    public static ApiService instance() { return sInstance; }
     public static volatile long lastPingOk = 0L;
     private static volatile String sState = "未启动";
 
@@ -78,6 +82,7 @@ public class ApiService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        sInstance = this;
         serviceRunning = true;
         createChannel();
         startForegroundCompat();
@@ -95,6 +100,8 @@ public class ApiService extends Service {
 
         startHttp();
         startWatchdog();
+        KeepAliveJobService.schedule(this);
+        maybeShowFloatingBall();
         updateNotification();
         Util.log("ApiService 已启动");
     }
@@ -125,6 +132,7 @@ public class ApiService extends Service {
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_STOP.equals(action)) {
             Util.prefs(this).edit().putBoolean("service_enabled", false).apply();
+            KeepAliveJobService.cancel(this);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -163,9 +171,11 @@ public class ApiService extends Service {
     @Override
     public void onDestroy() {
         boolean intentional = !Util.prefs(this).getBoolean("service_enabled", false);
+        if (sInstance == this) sInstance = null;
         serviceRunning = false;
         sState = "已停止";
         watchdog.removeCallbacks(watchdogTask);
+        hideFloatingBall();
         if (server != null) { server.stop(); server = null; }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         chatExec.shutdownNow();
@@ -226,6 +236,48 @@ public class ApiService extends Service {
     }
 
     private boolean autoNewChat() { return Util.prefs(this).getBoolean("auto_newchat", true); }
+
+    /** 单请求 prompt 字符上限（0=不限；网页端硬上限约 2621440 字符，默认留约 43% 余量）。 */
+    private int maxPromptChars() {
+        return Math.max(0, Util.prefs(this).getInt("max_prompt_chars", 1500000));
+    }
+
+    /** 单请求图片附件数量上限（0=不限；网页端实测成功 40 张、失败 52 张，默认取 40）。 */
+    private int maxRefImages() {
+        return Math.max(0, Util.prefs(this).getInt("max_ref_images", 40));
+    }
+
+    /** 错误里带「上下文超限」标记（网页端自然语言错误）。 */
+    static boolean lookContextLimit(String err) {
+        if (err == null || err.isEmpty()) return false;
+        if (err.toUpperCase(java.util.Locale.ROOT).contains("CONTEXT_LIMIT")) return true;
+        if (err.contains("上下文") && (err.contains("上限") || err.contains("超出") || err.contains("过长") || err.contains("达到"))) return true;
+        if (err.contains("长度上限") || err.contains("达到最大长度") || err.contains("输入过长")
+                || err.contains("内容过长") || err.contains("文本过长") || err.contains("字数上限")) return true;
+        String low = err.toLowerCase(java.util.Locale.ROOT);
+        return (low.contains("too long") || low.contains("too large") || low.contains("exceed"))
+                && (low.contains("content") || low.contains("prompt") || low.contains("context")
+                    || low.contains("input") || low.contains("message") || low.contains("text") || low.contains("token"));
+    }
+
+    /** 错误里带「附件/引用文件过多」标记（网页端 biz_code 10 / too many ref file）。 */
+    static boolean lookTooManyRefFiles(String err) {
+        if (err == null || err.isEmpty()) return false;
+        if (err.contains("附件") && (err.contains("过多") || err.contains("上限") || err.contains("超出") || err.contains("超限"))) return true;
+        if (err.contains("引用文件") || err.contains("文件数量")) return true;
+        String low = err.toLowerCase(java.util.Locale.ROOT);
+        return low.contains("too many ref") || low.contains("ref file");
+    }
+
+    /** 官网把「上下文超限，请开启新对话」当成一条普通回复返回时的识别（严格限长，避免误判正常回答）。 */
+    static boolean lookContextLimitText(String content, String thinking) {
+        if (content == null || content.isEmpty()) return false;
+        if (thinking != null && !thinking.isEmpty()) return false;   // 有思考内容 = 正常回答
+        String c = content.trim();
+        if (c.length() > 120) return false;
+        if (lookContextLimit(c)) return true;
+        return c.contains("请开启新对话") || c.contains("请新建对话") || c.contains("开启新对话后");
+    }
 
     /** 粗略估算 tokens：中日韩字符 ≈1.35 token/字，其余 ≈4 字符/token。 */
     private static long estTokens(String s) {
@@ -354,8 +406,12 @@ public class ApiService extends Service {
         final boolean stateless = Util.prefs(this).getBoolean("stateless", true);
 
         final PromptBuilder.Result pb;
-        try { pb = PromptBuilder.build(body, stateless); }
+        try { pb = PromptBuilder.build(body, stateless, maxPromptChars(), maxRefImages()); }
         catch (Exception e) { try { res.sendJson(400, errJson("Bad request: " + e.getMessage(), "invalid_request_error")); } catch (Exception ignored) {} return; }
+
+        // 上限保护提示（超长 prompt 中段截断 / 图片附件超出数量上限只保留最近 N 张）
+        if (pb.truncated) Util.log("prompt 超长，已中段截断：省略约 " + pb.omittedChars + " 字符（保留系统指令与最近对话）");
+        if (pb.omittedImages > 0) Util.log("附件图片超出上限，已略过最早 " + pb.omittedImages + " 张（本次只带 " + pb.attachments.size() + " 张）");
 
         if (!pb.toolNames.isEmpty()) sLastToolNames = new java.util.LinkedHashSet<>(pb.toolNames);
         final java.util.Set<String> toolNames = pb.toolNames.isEmpty() ? sLastToolNames : new java.util.LinkedHashSet<>(pb.toolNames);
@@ -411,6 +467,20 @@ public class ApiService extends Service {
         JSONObject r = DeepSeekController.get().sendPrompt(pb.text, null, timeout);
         String thinking = r.optString("thinking");
         String content = r.optString("content");
+
+        // 上下文超限 / 附件数量超限 → 自动新开对话并重试一次（此时还没写任何响应，重试是安全的）
+        String err0 = r.optString("error", "");
+        boolean hitLimit = lookContextLimit(err0) || lookContextLimitText(content, thinking);
+        boolean hitRef = lookTooManyRefFiles(err0);
+        if (hitLimit || hitRef) {
+            Util.log((hitRef ? "命中附件数量上限" : "命中上下文上限") + " → 自动新开对话并重试（" + (err0.isEmpty() ? content : err0) + "）");
+            JSONObject nc = DeepSeekController.get().newChat();
+            if (nc.optBoolean("ok")) { try { Thread.sleep(500); } catch (InterruptedException ignored) {} }
+            r = DeepSeekController.get().sendPrompt(pb.text, null, timeout);
+            thinking = r.optString("thinking");
+            content = r.optString("content");
+        }
+
         if (content.isEmpty() && thinking.isEmpty()) {
             String err = r.optString("error", "EMPTY");
             res.sendJson(502, errJson("DeepSeek 未返回内容: " + err, "server_error"));
@@ -602,7 +672,15 @@ public class ApiService extends Service {
     private void startForegroundCompat() {
         Notification n = buildNotification();
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIF_ID, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            int types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+            try {
+                startForeground(NOTIF_ID, n, types);
+            } catch (SecurityException e) {
+                // manifest 缺声明/权限时回退，绝不因前台类型导致启动失败
+                Util.log("specialUse 前台失败，回退 dataSync: " + e.getMessage());
+                startForeground(NOTIF_ID, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            }
         } else if (Build.VERSION.SDK_INT >= 29) {
             startForeground(NOTIF_ID, n, 1);
         } else {
@@ -615,6 +693,55 @@ public class ApiService extends Service {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             nm.notify(NOTIF_ID, buildNotification());
         } catch (Exception ignored) {}
+        // 悬浮球动效跟随「是否有请求进行中」
+        final FloatingBallView bv = ballView;
+        if (bv != null) {
+            final boolean busy = inflight.get() > 0;
+            bv.post(new Runnable() { @Override public void run() { bv.setBusy(busy); } });
+        }
+    }
+
+    /* ================= 悬浮球 ================= */
+
+    private volatile FloatingBallView ballView;
+
+    /** 是否允许悬浮窗（Android 6+ 需用户授权 SYSTEM_ALERT_WINDOW）。 */
+    public static boolean canOverlay(Context ctx) {
+        if (Build.VERSION.SDK_INT < 23) return true;
+        return android.provider.Settings.canDrawOverlays(ctx);
+    }
+
+    private void maybeShowFloatingBall() {
+        if (ballView != null) return;
+        if (!Util.prefs(this).getBoolean("floating_ball", false)) return;
+        if (!canOverlay(this)) { Util.log("悬浮球：缺少悬浮窗权限，已跳过"); return; }
+        try {
+            ballView = new FloatingBallView(this, new FloatingBallView.Listener() {
+                @Override public void onTap() {
+                    try {
+                        Intent i = new Intent(ApiService.this, MainActivity.class);
+                        i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                        startActivity(i);
+                    } catch (Exception ignored) {}
+                }
+            });
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            wm.addView(ballView, ballView.params());
+            ballView.setBusy(inflight.get() > 0);
+        } catch (Exception e) {
+            Util.log("悬浮球创建失败: " + e.getMessage());
+            ballView = null;
+        }
+    }
+
+    /** 供界面开关调用（主线程）。 */
+    public void showFloatingBall() { maybeShowFloatingBall(); }
+
+    public void hideFloatingBall() {
+        final FloatingBallView bv = ballView;
+        ballView = null;
+        if (bv == null) return;
+        try { ((WindowManager) getSystemService(WINDOW_SERVICE)).removeView(bv); } catch (Exception ignored) {}
     }
 
     private Notification buildNotification() {

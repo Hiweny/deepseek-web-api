@@ -369,6 +369,7 @@ public class MainActivity extends Activity {
         set.addView(makeRow("上下文上限（tokens）", "context_tokens"));
         set.addView(makeRow("新对话阈值（%）", "newchat_threshold"));
         set.addView(makeSwitch("保持屏幕常亮", "提高后台存活率（可关）", "keep_screen"));
+        set.addView(makeSwitch("悬浮球（快捷入口 / 助保活）", "屏幕上常驻小圆球，AI 回复时有动效；点击回到 App", "floating_ball"));
         col.addView(set);
 
         // 操作
@@ -479,6 +480,25 @@ public class MainActivity extends Activity {
             if ("keep_screen".equals(key)) {
                 if (checked) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+            if ("floating_ball".equals(key)) {
+                if (checked) {
+                    if (!ApiService.canOverlay(MainActivity.this)) {
+                        Toast.makeText(MainActivity.this, "请先授予「悬浮窗」权限，授权后重新打开本开关", Toast.LENGTH_LONG).show();
+                        try {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:" + getPackageName())));
+                        } catch (Exception ignored) {}
+                        sw.setChecked(false);   // 待授权后再开
+                        return;
+                    }
+                    ApiService.start(MainActivity.this);
+                    ApiService svc = ApiService.instance();
+                    if (svc != null) svc.showFloatingBall();
+                } else {
+                    ApiService svc = ApiService.instance();
+                    if (svc != null) svc.hideFloatingBall();
+                }
             }
         });
         row.addView(sw);
