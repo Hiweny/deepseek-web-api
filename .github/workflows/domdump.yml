@@ -24,8 +24,10 @@ jobs:
         run: |
           pip install -q playwright
           python -m playwright install --with-deps chromium
+      - name: Install xvfb
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
       - name: Dump
-        run: python tools/domdump.py
+        run: xvfb-run -a --server-args='-screen 0 1600x1000x24' python tools/domdump.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
