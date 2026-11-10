@@ -217,12 +217,32 @@ def try_login(pg):
 
 def run():
     with sync_playwright() as p:
-        b = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        b = p.chromium.launch(headless=False, args=[
+            "--no-sandbox", "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--window-size=1440,900"])
         ctx = b.new_context(viewport={"width": 1440, "height": 900}, user_agent=UA,
                             locale="zh-CN", device_scale_factor=1)
+        ctx.add_init_script("""
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+window.chrome = window.chrome || { runtime: {} };
+""")
         pg = ctx.new_page()
         pg.goto(HOME, wait_until="domcontentloaded", timeout=90000)
-        pg.wait_for_timeout(4000)
+        # 等 WAF 挑战页放行（最多 90s）
+        for i in range(45):
+            pg.wait_for_timeout(2000)
+            try:
+                t = pg.title()
+                has = pg.evaluate("!!document.querySelector('#root') && document.querySelector('#root').children.length>0")
+            except Exception:
+                t, has = "", False
+            print("wait", i, "title=", t, "app=", has)
+            if has and "确认" not in t and "human" not in t.lower():
+                break
+        pg.wait_for_timeout(2000)
         dismiss_overlays(pg)
         save(pg, "01_entry")
         ok = try_login(pg)
