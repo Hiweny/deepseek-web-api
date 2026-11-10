@@ -1,0 +1,34 @@
+name: DOM dump (temp, login + capture chat.deepseek.com)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/domdump.yml'
+      - 'tools/domdump.py'
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DS_TEST_PHONE: ${{ secrets.DS_TEST_PHONE }}
+      DS_TEST_PASSWORD: ${{ secrets.DS_TEST_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install playwright
+        run: |
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: Dump
+        run: python tools/domdump.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: domdump
+          path: /tmp/dump
+          retention-days: 7
