@@ -18,6 +18,8 @@ public class AccountSlot {
     /** 该账号在 chat.deepseek.com 下的完整 Cookie header 原文（含 httpOnly，敏感，不打印） */
     public String cookies = "";
     public String deviceId = "";
+    /** 该账号的 localStorage 快照（base64(JSON)），切换账号时一并还原，做到彻底隔离 */
+    public String storage = "";
     public long createdAt = 0L;
     public long lastLoginAt = 0L;
     public long lastUsedMs = 0L;

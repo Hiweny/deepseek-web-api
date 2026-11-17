@@ -26,6 +26,28 @@ public final class Util {
         Log.d(TAG, msg);
     }
 
+    /** 本机局域网 IPv4（优先 192.168.x.x），没有则返回空串。 */
+    public static String lanIp() {
+        String fallback = "";
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> en = java.net.NetworkInterface.getNetworkInterfaces();
+            while (en != null && en.hasMoreElements()) {
+                java.net.NetworkInterface ni = en.nextElement();
+                if (ni == null || !ni.isUp() || ni.isLoopback()) continue;
+                java.util.Enumeration<java.net.InetAddress> as = ni.getInetAddresses();
+                while (as.hasMoreElements()) {
+                    java.net.InetAddress a = as.nextElement();
+                    if (!(a instanceof java.net.Inet4Address) || a.isLoopbackAddress()) continue;
+                    String ip = a.getHostAddress();
+                    if (ip == null) continue;
+                    if (ip.startsWith("192.168.")) return ip;
+                    if (fallback.isEmpty()) fallback = ip;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return fallback;
+    }
+
     public static synchronized String logText() {
         StringBuilder sb = new StringBuilder();
         int from = Math.max(0, LOG.size() - 300);

@@ -186,7 +186,7 @@ public final class WebHost {
                 Util.log("页面加载完成: " + url);
                 sPageLoaded = true;
                 DeepSeekController.get().injectBridge();
-                MAIN.postDelayed(() -> DeepSeekController.get().probe(), 1000L);
+                MAIN.postDelayed(() -> DeepSeekController.get().probe(), 350L);
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 String u = req.getUrl().toString();

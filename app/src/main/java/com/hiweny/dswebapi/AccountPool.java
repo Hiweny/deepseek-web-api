@@ -39,6 +39,7 @@ public final class AccountPool {
         synchronized (lk) {
             if (!slots.isEmpty()) return;
             slots.addAll(AccountVault.load(app));
+            for (AccountSlot s : slots) s.storage = AccountVault.loadStorage(app, s.id);
             cursor = 0;
             cycleNo = 1;
         }
@@ -86,7 +87,11 @@ public final class AccountPool {
                 }
             }
         }
-        if (ok) { persist(); Util.log("删除账号槽 " + id); }
+        if (ok) {
+            if (app != null) AccountVault.removeStorage(app, id);
+            persist();
+            Util.log("删除账号槽 " + id);
+        }
         return ok;
     }
 
@@ -214,6 +219,30 @@ public final class AccountPool {
             Util.log("账号 " + s.name + " 命中限流，冷却 " + min + " 分钟");
         }
         persist();
+    }
+
+    /**
+     * 预测「下一次 acquire 会选中谁」（不改变任何状态，仅用于空闲预切换）。
+     */
+    public AccountSlot predict() {
+        int lim = limit();
+        synchronized (lk) {
+            int n = slots.size();
+            if (n == 0) return null;
+            if (cursor < 0 || cursor >= n) cursor = 0;
+            AccountSlot cur = slots.get(cursor);
+            if (usable(cur) && cur.sentInSession < lim && cur.reserved == 0) return cur;
+            for (int k = 1; k < n; k++) {
+                AccountSlot s = slots.get((cursor + k) % n);
+                if (usable(s) && s.sentInSession < lim && s.reserved == 0) return s;
+            }
+            if (usable(cur) && cur.sentInSession < lim) return cur;
+            for (int k = 0; k < n; k++) {
+                AccountSlot s = slots.get(k);
+                if (usable(s)) return s;
+            }
+            return null;
+        }
     }
 
     /** 最短的冷却剩余秒数（全部冷却时用于 Retry-After）。 */

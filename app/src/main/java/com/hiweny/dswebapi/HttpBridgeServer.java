@@ -14,28 +14,36 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** 极简本地 HTTP/1.1 服务器（仅监听 127.0.0.1），支持普通响应与 SSE 分块流式响应。 */
+/** 极简 HTTP/1.1 服务器（默认仅监听 127.0.0.1，可选监听 0.0.0.0 供局域网访问）。 */
 public class HttpBridgeServer {
 
     public interface Router { void handle(Request req, Response res) throws Exception; }
 
     private final int port;
     private final Router router;
+    private final String bindAddr;
     private ServerSocket server;
     private volatile boolean running;
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
-    public HttpBridgeServer(int port, Router router) { this.port = port; this.router = router; }
+    public HttpBridgeServer(int port, Router router) { this(port, router, "127.0.0.1"); }
+
+    public HttpBridgeServer(int port, Router router, String bindAddr) {
+        this.port = port; this.router = router;
+        this.bindAddr = (bindAddr == null || bindAddr.isEmpty()) ? "127.0.0.1" : bindAddr;
+    }
 
     public void start() throws IOException {
         server = new ServerSocket();
         server.setReuseAddress(true);
-        server.bind(new InetSocketAddress("127.0.0.1", port), 128);
+        server.bind(new InetSocketAddress(bindAddr, port), 128);
         running = true;
         Thread t = new Thread(this::acceptLoop, "http-accept");
         t.setDaemon(true);
         t.start();
-        Util.log("HTTP 服务已启动: http://127.0.0.1:" + port);
+        boolean lan = !"127.0.0.1".equals(bindAddr);
+        Util.log("HTTP 服务已启动: http://" + (lan && !Util.lanIp().isEmpty() ? Util.lanIp() : "127.0.0.1")
+                + ":" + port + (lan ? "（局域网可访问）" : ""));
     }
 
     public void stop() {

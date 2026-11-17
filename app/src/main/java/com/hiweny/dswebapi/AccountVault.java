@@ -13,6 +13,8 @@ import java.util.UUID;
 /** 多账号的持久化与配置项（应用私有 SharedPreferences，Cookie 属敏感数据，仅本机保存）。 */
 public final class AccountVault {
     private static final String PREF = "dswb_accounts";
+    /** localStorage 快照单独存一个文件，避免每次 persist 主列表时重复写几 MB。 */
+    private static final String PREF_LS = "dswb_accounts_ls";
     private static final String K_LIST = "list";
     private static final String K_ACTIVE = "active";
     private static final String K_ROTATE = "rotate";
@@ -64,7 +66,7 @@ public final class AccountVault {
 
     /** 同一账号在同一对话里最多连发几次。 */
     public static int sendLimit(Context c) {
-        int v = sp(c).getInt(K_LIMIT, 2);
+        int v = sp(c).getInt(K_LIMIT, 3);
         return v < 1 ? 1 : (v > 50 ? 50 : v);
     }
     public static void setSendLimit(Context c, int v) { sp(c).edit().putInt(K_LIMIT, Math.max(1, Math.min(50, v))).apply(); }
@@ -75,6 +77,30 @@ public final class AccountVault {
         return v < 0 ? 0 : (v > 720 ? 720 : v);
     }
     public static void setCooldownMin(Context c, int v) { sp(c).edit().putInt(K_COOLDOWN, Math.max(0, Math.min(720, v))).apply(); }
+
+    public static void saveStorage(Context c, String id, String b64) {
+        if (id == null || id.isEmpty()) return;
+        try {
+            c.getApplicationContext().getSharedPreferences(PREF_LS, Context.MODE_PRIVATE)
+                    .edit().putString(id, b64 == null ? "" : b64).apply();
+        } catch (Throwable ignored) {}
+    }
+
+    public static String loadStorage(Context c, String id) {
+        if (id == null || id.isEmpty()) return "";
+        try {
+            return c.getApplicationContext().getSharedPreferences(PREF_LS, Context.MODE_PRIVATE)
+                    .getString(id, "");
+        } catch (Throwable t) { return ""; }
+    }
+
+    public static void removeStorage(Context c, String id) {
+        if (id == null || id.isEmpty()) return;
+        try {
+            c.getApplicationContext().getSharedPreferences(PREF_LS, Context.MODE_PRIVATE)
+                    .edit().remove(id).apply();
+        } catch (Throwable ignored) {}
+    }
 
     public static String newId() { return UUID.randomUUID().toString().replace("-", "").substring(0, 10); }
 }

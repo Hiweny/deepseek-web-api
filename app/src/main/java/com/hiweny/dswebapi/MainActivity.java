@@ -55,7 +55,10 @@ public class MainActivity extends Activity {
     private View controlPanel;
     private int currentTab = TAB_CONTROL;
 
-    private TextView tvService, tvWeb, tvLogin, tvCalls, tvCtx, tvLast, tvBase, tvKey, tvLog;
+    private TextView tvService, tvWeb, tvLogin, tvCalls, tvCtx, tvLast, tvBase, tvKey, tvLog, tvLan;
+    /** 对话页是否正显示在前台（预切换据此避让，避免用户看着页面被刷新）。 */
+    public static volatile boolean sWebVisible = false;
+    public static boolean isWebVisible() { return sWebVisible; }
     private LinearLayout navIconBoxControl, navIconBoxWeb;
     private TextView navIconControl, navIconWeb, navLabelControl, navLabelWeb;
 
@@ -143,7 +146,14 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (webPanel != null) WebHost.attachTo(webContainer);
+        sWebVisible = (currentTab == TAB_WEB);
         refreshStats();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        sWebVisible = false;
     }
 
     @Override
@@ -277,6 +287,7 @@ public class MainActivity extends Activity {
         controlPanel.setVisibility(control ? View.VISIBLE : View.GONE);
         webPanel.setVisibility(control ? View.GONE : View.VISIBLE);
         if (!control) WebHost.attachTo(webContainer);
+        sWebVisible = (tab == TAB_WEB);
         updateNavStyle();
         if (control) refreshStats();
     }
@@ -368,9 +379,11 @@ public class MainActivity extends Activity {
         api.addView(cardTitle("接口信息"));
         tvBase = line("Base URL", "—"); api.addView(tvBase);
         tvKey = line("API Key", "—"); api.addView(tvKey);
+        tvLan = line("局域网", "未开启"); api.addView(tvLan);
         api.addView(rowButtons(new String[][]{
                 {"复制 Base URL", "copy_base"}, {"复制 API Key", "copy_key"}
         }));
+        api.addView(rowButtons(new String[][]{{"复制局域网地址", "copy_lan"}}));
         col.addView(api);
 
         // 设置
@@ -387,6 +400,8 @@ public class MainActivity extends Activity {
         set.addView(makeRow("新对话阈值（%）", "newchat_threshold"));
         set.addView(makeSwitch("保持屏幕常亮", "提高后台存活率（可关）", "keep_screen"));
         set.addView(makeSwitch("悬浮球（快捷入口 / 助保活）", "屏幕上常驻小圆球，AI 回复时有动效；点击回到 App", "floating_ball"));
+        set.addView(makeSwitch("允许局域网访问", "同 WiFi 下其它设备可调用本机接口；仅建议在可信网络开启", "lan_enabled"));
+        set.addView(makeSwitch("空闲预切换账号", "请求结束后提前切到下一个账号，下次调用零等待（不看对话页时生效）", "pre_switch"));
         col.addView(set);
 
         // 多账号
@@ -409,7 +424,9 @@ public class MainActivity extends Activity {
         accCard.addView(rot);
         accCard.addView(makeVaultRow("每账号连发次数", "limit"));
         accCard.addView(makeVaultRow("限流冷却（分钟）", "cooldown"));
-        accCard.addView(rowButtons(new String[][]{{"去对话页管理账号", "goto_accounts"}}));
+        accCard.addView(rowButtons(new String[][]{
+                {"去对话页管理账号", "goto_accounts"}, {"添加账号", "add_account"}
+        }));
         col.addView(accCard);
 
         // 操作
@@ -513,13 +530,19 @@ public class MainActivity extends Activity {
         col.addView(h);
         row.addView(col);
         Switch sw = new Switch(this);
-        boolean defOn = "keep_screen".equals(key) || "stateless".equals(key) || "auto_newchat".equals(key);
+        boolean defOn = "keep_screen".equals(key) || "stateless".equals(key)
+                || "auto_newchat".equals(key) || "pre_switch".equals(key);
         sw.setChecked(Util.prefs(this).getBoolean(key, defOn));
         sw.setOnCheckedChangeListener((b, checked) -> {
             Util.prefs(this).edit().putBoolean(key, checked).apply();
             if ("keep_screen".equals(key)) {
                 if (checked) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+            if ("lan_enabled".equals(key)) {
+                ApiService.restartHttp();
+                toast(checked ? "局域网访问已开启，正在重启服务…" : "局域网访问已关闭，正在重启服务…");
+                handler.postDelayed(() -> refreshStats(), 1200);
             }
             if ("floating_ball".equals(key)) {
                 if (checked) {
@@ -626,6 +649,13 @@ public class MainActivity extends Activity {
             case "notif": requestNotifPermission(); break;
             case "clearlog": Util.clearLog(); refreshStats(); toast("日志已清空"); break;
             case "goto_accounts": switchTab(TAB_WEB); toast("顶部就是账号栏，点「＋ 添加」新增"); break;
+            case "add_account": switchTab(TAB_WEB); handler.postDelayed(this::addAccountFlow, 250); break;
+            case "copy_lan": {
+                String ip = Util.lanIp();
+                if (ip.isEmpty()) toast("未获取到局域网 IP，请先连接 WiFi");
+                else copy("http://" + ip + ":" + currentSetting("port") + "/v1");
+                break;
+            }
         }
     }
 
@@ -683,6 +713,12 @@ public class MainActivity extends Activity {
         tvLast.setText(ApiService.lastCallText());
         tvBase.setText("http://127.0.0.1:" + currentSetting("port") + "/v1");
         tvKey.setText(String.valueOf(currentSetting("apikey")));
+        if (tvLan != null) {
+            boolean lan = Util.prefs(this).getBoolean("lan_enabled", false);
+            String ip = Util.lanIp();
+            tvLan.setText(lan ? (ip.isEmpty() ? "已开启（未获取到 IP）" : "http://" + ip + ":" + currentSetting("port") + "/v1")
+                              : "未开启（仅本机可访问）");
+        }
         if (tvLog != null) tvLog.setText(Util.logText());
         if (tvAccounts != null) {
             List<AccountSlot> ls = AccountPool.get().snapshot();
@@ -770,6 +806,8 @@ public class MainActivity extends Activity {
         t.setGravity(Gravity.CENTER);
         t.setPadding(dp(12), 0, dp(12), 0);
         t.setTextColor(active ? 0xFFFFFFFF : theme.text());
+        t.setClickable(true);
+        t.setFocusable(true);
         t.setBackground(active ? roundedBg(theme.accent(), 18)
                 : strokeBg(theme.cardBg(), theme.divider(), 18));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(isTablet() ? 38 : 32));
@@ -849,29 +887,36 @@ public class MainActivity extends Activity {
     }
 
     private void addAccountFlow() {
-        final EditText et = new EditText(this);
-        et.setHint("账号备注，如：账号 2");
-        et.setTextColor(theme.text());
-        new AlertDialog.Builder(this)
-                .setTitle("添加账号")
-                .setMessage("确定后会清空当前页面的登录态，请在页面上登录新账号；登录完成后点顶部「保存登录」。")
-                .setView(et)
-                .setPositiveButton("开始登录", (d, w) -> {
-                    String name = et.getText().toString().trim();
-                    if (name.isEmpty()) name = "账号 " + (AccountPool.get().size() + 1);
-                    AccountSlot cur = AccountPool.get().find(AccountVault.activeId(MainActivity.this));
-                    AccountSwitcher.snapshot(cur);
-                    AccountPool pool = AccountPool.get();
-                    AccountSlot s = pool.add(name);
-                    pool.persist();
-                    pendingAddId = s.id;
-                    addingMode = true;
-                    accountSig = "";
-                    refreshAccountBar();
-                    new Thread(() -> AccountSwitcher.prepareForLogin()).start();
-                    toast("请登录「" + name + "」，完成后点顶部「保存登录」");
-                })
-                .setNegativeButton("取消", null).show();
+        if (addingMode) { toast("正在等待登录保存，点顶部「取消」可退出"); return; }
+        Util.log("点击「＋ 添加账号」");
+        AccountPool pool = AccountPool.get();
+        pool.ensureLoaded(this);
+        final AccountSlot cur = pool.find(AccountVault.activeId(this));
+        final String name = "账号 " + (pool.size() + 1);
+        toast("正在准备登录环境…");
+        new Thread(() -> {
+            // 先把当前账号完整存下来（Cookie + localStorage），再新增槽位
+            try {
+                AccountSwitcher.snapshot(cur);
+                if (cur != null) {
+                    cur.storage = AccountSwitcher.readStorage();
+                    AccountVault.saveStorage(MainActivity.this, cur.id, cur.storage);
+                }
+                AccountPool.get().persist();
+            } catch (Throwable t) {
+                Util.log("保存当前账号失败: " + t.getMessage());
+            }
+            final AccountSlot s = AccountPool.get().add(name);
+            AccountPool.get().persist();
+            handler.post(() -> {
+                pendingAddId = s.id;
+                addingMode = true;
+                accountSig = "";
+                refreshAccountBar();
+                toast("请在页面上登录「" + name + "」，完成后点顶部「保存登录」");
+            });
+            AccountSwitcher.prepareForLogin();
+        }, "add-account").start();
     }
 
     private void confirmSaveLogin() {

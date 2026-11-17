@@ -46,6 +46,7 @@ public class ApiService extends Service {
     private final ExecutorService chatExec = Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService pingExec = Executors.newScheduledThreadPool(2);
     private final Handler watchdog = new Handler(Looper.getMainLooper());
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private static final AtomicInteger inflight = new AtomicInteger(0);
     private static final AtomicInteger totalCalls = new AtomicInteger(0);
     private static final AtomicInteger okCalls = new AtomicInteger(0);
@@ -75,6 +76,20 @@ public class ApiService extends Service {
     }
 
     public static String state() { return sState; }
+
+    /** 切换「局域网访问」后重启 HTTP 服务（换绑定地址必须重建 socket）。 */
+    public static void restartHttp() {
+        final ApiService svc = sInstance;
+        if (svc == null) return;
+        new Thread(() -> {
+            try {
+                if (svc.server != null) { svc.server.stop(); svc.server = null; }
+                svc.startHttp();
+            } catch (Throwable t) {
+                Util.log("重启 HTTP 失败: " + t.getMessage());
+            }
+        }, "restart-http").start();
+    }
     public static String isLoggedInText() { return lastProbeLoggedIn ? "已登录" : "未登录（请在「对话页」登录）"; }
     public static String totalCallsText() { return totalCalls.get() + " 次（成功 " + okCalls.get() + "）"; }
     public static String lastCallText() { return lastCallInfo; }
@@ -110,15 +125,17 @@ public class ApiService extends Service {
 
     private void startHttp() {
         final int port = port();
+        final boolean lan = Util.prefs(this).getBoolean("lan_enabled", false);
+        final String bind = lan ? "0.0.0.0" : "127.0.0.1";
         try {
-            server = new HttpBridgeServer(port, this::route);
+            server = new HttpBridgeServer(port, this::route, bind);
             server.start();
         } catch (Exception e) {
             Util.log("HTTP 启动失败(端口 " + port + "): " + e.getMessage());
             // 端口占用则顺延
             for (int p = port + 1; p < port + 20; p++) {
                 try {
-                    server = new HttpBridgeServer(p, this::route);
+                    server = new HttpBridgeServer(p, this::route, bind);
                     server.start();
                     Util.prefs(this).edit().putInt("port_active", p).apply();
                     Util.log("改用端口 " + p);
@@ -234,11 +251,13 @@ public class ApiService extends Service {
             pool.ensureLoaded(c);
             java.util.List<AccountSlot> list = pool.snapshot();
             if (list.isEmpty()) {
-                AccountSlot s = pool.add("账号 1");
-                AccountSwitcher.bindCurrent(s);
+                final AccountSlot s = pool.add("账号 1");
                 AccountVault.setActiveId(c, s.id);
-                pool.persist();
-                Util.log("首次启用多账号：当前登录态已绑定为「账号 1」");
+                new Thread(() -> {
+                    AccountSwitcher.bindCurrent(s);
+                    AccountPool.get().persist();
+                    Util.log("首次启用多账号：当前登录态已绑定为「账号 1」");
+                }, "bind-primary").start();
                 return;
             }
             String active = AccountVault.activeId(c);
@@ -287,6 +306,44 @@ public class ApiService extends Service {
     /** 单请求图片附件数量上限（0=不限；网页端实测成功 40 张、失败 52 张，默认取 40）。 */
     private int maxRefImages() {
         return Math.max(0, Util.prefs(this).getInt("max_ref_images", 40));
+    }
+
+    /* ================= 空闲预切换（把切换耗时藏到下一次请求之前） ================= */
+
+    /** 请求结束后约 1.2 秒若无人再来，先把 WebView 切到下一个账号，下次调用零等待。 */
+    private void schedulePreSwitch() {
+        try {
+            if (!Util.prefs(this).getBoolean("pre_switch", true)) return;
+            if (AccountPool.get().size() <= 1) return;
+            if (!AccountVault.rotateEnabled(this)) return;
+            uiHandler.removeCallbacks(preSwitchTask);
+            uiHandler.postDelayed(preSwitchTask, 1200L);
+        } catch (Throwable ignored) {}
+    }
+
+    private final Runnable preSwitchTask = new Runnable() {
+        @Override public void run() {
+            new Thread(() -> doPreSwitch(), "pre-switch").start();
+        }
+    };
+
+    private void doPreSwitch() {
+            try {
+                if (inflight.get() > 0) return;
+                if (MainActivity.isWebVisible()) return;
+                if (DeepSeekController.get().isBusy()) return;
+                AccountSlot next = AccountPool.get().predict();
+                if (next == null) return;
+                String active = AccountVault.activeId(ApiService.this);
+                if (next.id.equals(active)) return;
+                AccountSlot cur = AccountPool.get().find(active);
+                if (AccountSwitcher.switchTo(next, cur, 25000L)) {
+                    AccountVault.setActiveId(ApiService.this, next.id);
+                    Util.log("空闲预切换完成 → " + next.name + "（下次请求零等待）");
+                }
+            } catch (Throwable t) {
+                Util.log("预切换失败: " + t.getMessage());
+            }
     }
 
     /** 网页端「消息发送频繁 / 稍后再试」这类限流提示。 */
@@ -431,6 +488,9 @@ public class ApiService extends Service {
         o.put("rotate", AccountVault.rotateEnabled(this));
         AccountSlot as = AccountPool.get().find(AccountVault.activeId(this));
         o.put("active_account", as == null ? "" : as.name);
+        boolean lan = Util.prefs(this).getBoolean("lan_enabled", false);
+        o.put("lan_enabled", lan);
+        o.put("lan_url", lan && !Util.lanIp().isEmpty() ? "http://" + Util.lanIp() + ":" + port() + "/v1" : "");
         res.sendJson(o.toString());
     }
 
@@ -552,6 +612,7 @@ public class ApiService extends Service {
                 if (pick != null && pick.slot != null && !settled[0]) {
                     boolean rl = lookRateLimited(lastCallInfo);
                     AccountPool.get().release(pick.slot, !rl, rl);
+                    schedulePreSwitch();
                 }
                 inflight.decrementAndGet();
                 updateNotification();

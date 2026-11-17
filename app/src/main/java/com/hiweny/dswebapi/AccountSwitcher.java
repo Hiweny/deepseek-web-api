@@ -88,6 +88,54 @@ public final class AccountSwitcher {
         try { l.await(waitMs, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
     }
 
+    /** 读取当前页面的 localStorage（base64(JSON)）；超过 2MB 视为不可用，返回空串。 */
+    public static String readStorage() {
+        final String[] out = {""};
+        final CountDownLatch l = new CountDownLatch(1);
+        WebHost.runOnMain(() -> {
+            WebView wv = WebHost.get();
+            if (wv == null) { l.countDown(); return; }
+            try {
+                wv.evaluateJavascript(
+                        "(function(){try{var o={};for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);o[k]=localStorage.getItem(k)}"
+                        + "var s=JSON.stringify(o);if(s.length>2000000)return '';"
+                        + "return btoa(unescape(encodeURIComponent(s)))}catch(e){return ''}})()",
+                        v -> { out[0] = v == null ? "" : v; l.countDown(); });
+            } catch (Throwable t) {
+                l.countDown();
+            }
+        });
+        try { l.await(2500, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+        String v = out[0];
+        if (v == null) return "";
+        if (v.length() >= 2 && v.startsWith("\"") && v.endsWith("\"")) v = v.substring(1, v.length() - 1);
+        if ("null".equals(v) || "\"\"".equals(v)) return "";
+        return v;
+    }
+
+    /** 用快照覆盖当前页面的 localStorage；b64 为空则清空。 */
+    public static void writeStorage(String b64, long waitMs) {
+        final String data = b64 == null ? "" : b64;
+        final CountDownLatch l = new CountDownLatch(1);
+        WebHost.runOnMain(() -> {
+            WebView wv = WebHost.get();
+            if (wv == null) { l.countDown(); return; }
+            String js;
+            if (data.isEmpty()) {
+                js = "try{localStorage.clear();sessionStorage.clear();}catch(e){}";
+            } else {
+                js = "(function(){try{var d=JSON.parse(decodeURIComponent(escape(atob('" + data + "'))));"
+                        + "localStorage.clear();for(var k in d)localStorage.setItem(k,d[k]);return 1}catch(e){return 0}})()";
+            }
+            try {
+                wv.evaluateJavascript(js, v -> l.countDown());
+            } catch (Throwable t) {
+                l.countDown();
+            }
+        });
+        try { l.await(waitMs, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+    }
+
     /** 清空当前页面的 localStorage / sessionStorage。 */
     public static void clearStorage(long waitMs) {
         final CountDownLatch l = new CountDownLatch(1);
@@ -122,7 +170,12 @@ public final class AccountSwitcher {
      */
     public static boolean switchTo(AccountSlot target, AccountSlot current, long timeoutMs) {
         if (target == null) return false;
-        if (current != null && current != target) snapshot(current);
+        if (current != null && current != target) {
+            snapshot(current);
+            current.storage = readStorage();   // 保存旧账号的 localStorage
+            android.content.Context c = AccountPool.get().ctx();
+            if (c != null) AccountVault.saveStorage(c, current.id, current.storage);
+        }
 
         if (!target.hasCookie()) {
             // 尚未绑定登录态的账号：清空后让用户手动登录
@@ -130,7 +183,7 @@ public final class AccountSwitcher {
             return true;
         }
         applyCookies(target.cookies, COOKIE_WAIT_MS);
-        clearStorage(STORAGE_WAIT_MS);
+        writeStorage(target.storage, STORAGE_WAIT_MS);   // 还原该账号的 localStorage（空则清空）
         ApiService.resetProbe();
         WebHost.loadUrl(URL);
         boolean ok = awaitReady(timeoutMs);
@@ -143,7 +196,7 @@ public final class AccountSwitcher {
     /** 准备手动登录一个新账号：清空所有登录痕迹并回到登录页。 */
     public static void prepareForLogin() {
         applyCookies("", COOKIE_WAIT_MS);
-        clearStorage(STORAGE_WAIT_MS);
+        writeStorage("", STORAGE_WAIT_MS);
         ApiService.resetProbe();
         WebHost.loadUrl(URL);
     }
@@ -152,6 +205,9 @@ public final class AccountSwitcher {
     public static void bindCurrent(AccountSlot s) {
         if (s == null) return;
         snapshot(s);
+        s.storage = readStorage();          // 一并保存 localStorage（须在后台线程调用）
+        android.content.Context ctx = AccountPool.get().ctx();
+        if (ctx != null) AccountVault.saveStorage(ctx, s.id, s.storage);
         final CountDownLatch l = new CountDownLatch(1);
         WebHost.runOnMain(() -> {
             WebView wv = WebHost.get();
