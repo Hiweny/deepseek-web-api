@@ -50,6 +50,8 @@ public class ApiService extends Service {
     private static final AtomicInteger totalCalls = new AtomicInteger(0);
     private static final AtomicInteger okCalls = new AtomicInteger(0);
     private static volatile String lastCallInfo = "—";
+    /** 最近一次请求由哪个账号承接（UI 展示用）。 */
+    private static volatile String lastAccountInfo = "";
     private static volatile boolean lastProbeLoggedIn = false, lastProbeReady = false;
 
     // 会话上下文监控（估算 tokens）：跟踪当前官网会话累计上下文，达阈值自动轮换
@@ -195,6 +197,7 @@ public class ApiService extends Service {
             if ("probe".equals(type) || "boot".equals(type)) {
                 if (o.has("loggedIn")) lastProbeLoggedIn = o.optBoolean("loggedIn");
                 if (o.has("ready")) lastProbeReady = o.optBoolean("ready");
+                if (lastProbeLoggedIn) ensurePrimaryAccountBound();
             } else if ("session".equals(type)) {
                 String sid = o.optString("sessionId", "");
                 synchronized (ctxLock) {
@@ -207,6 +210,45 @@ public class ApiService extends Service {
                 }
             }
         } catch (Exception ignored) {}
+    }
+
+    /* ================= 多账号 ================= */
+
+    public static boolean probeLoggedIn() { return lastProbeLoggedIn; }
+
+    /** 切换账号前把 probe 结果置未知，避免用旧账号的登录态误判新账号。 */
+    public static void resetProbe() {
+        lastProbeLoggedIn = false;
+        lastProbeReady = false;
+    }
+
+    public static String lastAccountName() { return lastAccountInfo; }
+
+    /** 首次启用多账号时，把当前已登录的 WebView 绑定成「账号 1」，老用户升级后无感。 */
+    private static void ensurePrimaryAccountBound() {
+        Context c = sInstance;
+        if (c == null) return;
+        synchronized (AccountPool.get()) {
+        try {
+            AccountPool pool = AccountPool.get();
+            pool.ensureLoaded(c);
+            java.util.List<AccountSlot> list = pool.snapshot();
+            if (list.isEmpty()) {
+                AccountSlot s = pool.add("账号 1");
+                AccountSwitcher.bindCurrent(s);
+                AccountVault.setActiveId(c, s.id);
+                pool.persist();
+                Util.log("首次启用多账号：当前登录态已绑定为「账号 1」");
+                return;
+            }
+            String active = AccountVault.activeId(c);
+            if (active == null || active.isEmpty() || pool.find(active) == null) {
+                AccountVault.setActiveId(c, list.get(0).id);
+            }
+        } catch (Throwable t) {
+            Util.log("绑定主账号失败: " + t.getMessage());
+        }
+        }
     }
 
     /* ================= 会话上下文监控 ================= */
@@ -245,6 +287,14 @@ public class ApiService extends Service {
     /** 单请求图片附件数量上限（0=不限；网页端实测成功 40 张、失败 52 张，默认取 40）。 */
     private int maxRefImages() {
         return Math.max(0, Util.prefs(this).getInt("max_ref_images", 40));
+    }
+
+    /** 网页端「消息发送频繁 / 稍后再试」这类限流提示。 */
+    static boolean lookRateLimited(String s) {
+        if (s == null || s.isEmpty()) return false;
+        String u = s.toUpperCase(java.util.Locale.ROOT);
+        if (u.contains("RATE_LIMIT") || u.contains("TOO MANY REQUESTS")) return true;
+        return s.contains("发送频繁") || s.contains("频率") || s.contains("稍后再试") || s.contains("请求过于频繁");
     }
 
     /** 错误里带「上下文超限」标记（网页端自然语言错误）。 */
@@ -377,6 +427,10 @@ public class ApiService extends Service {
         o.put("total_calls", totalCalls.get());
         o.put("ok_calls", okCalls.get());
         o.put("endpoint", "http://127.0.0.1:" + port() + "/v1");
+        o.put("accounts", AccountPool.get().size());
+        o.put("rotate", AccountVault.rotateEnabled(this));
+        AccountSlot as = AccountPool.get().find(AccountVault.activeId(this));
+        o.put("active_account", as == null ? "" : as.name);
         res.sendJson(o.toString());
     }
 
@@ -432,13 +486,53 @@ public class ApiService extends Service {
         else if (model.toLowerCase().contains("reasoner") || model.toLowerCase().contains("think")) thinking = "on";
         DeepSeekController.get().configure(thinking, search);
 
+        // 多账号轮换：提交前在锁内预占名额（并发请求会被分散到不同账号）
+        final AccountPool.Pick pick;
+        boolean rotate = AccountVault.rotateEnabled(this) && AccountPool.get().size() > 1;
+        if (rotate) {
+            pick = AccountPool.get().acquire();
+            if (pick == null || pick.slot == null) {
+                int left = AccountPool.get().minCooldownLeftSec();
+                String msg = (pick != null && pick.allCooling)
+                        ? "所有账号都在冷却中（最早 " + left + " 秒后恢复）"
+                        : "没有可用账号：请先在「对话页」添加并登录账号";
+                try { res.sendJson(429, errJson(msg, "rate_limit_error")); } catch (Exception ignored) {}
+                return;
+            }
+        } else {
+            pick = null;
+        }
+
         inflight.incrementAndGet();
         totalCalls.incrementAndGet();
         final long t0 = System.currentTimeMillis();
         updateNotification();
 
+        final boolean[] settled = {false};
         chatExec.submit(() -> {
             try {
+                // 多账号轮换：先把 WebView 切到本次分配到的账号（会重载页面，必须在发送前完成）
+                if (pick != null && pick.slot != null) {
+                    AccountSlot cur = AccountPool.get().find(AccountVault.activeId(ApiService.this));
+                    boolean okAcc = (cur == pick.slot)
+                            ? AccountSwitcher.awaitReady(15000L)
+                            : AccountSwitcher.switchTo(pick.slot, cur, 25000L);
+                    if (okAcc) AccountVault.setActiveId(ApiService.this, pick.slot.id);
+                    if (!okAcc) {
+                        settled[0] = true;
+                        AccountPool.get().release(pick.slot, false, false);
+                        lastCallInfo = "账号 " + pick.slot.name + " 登录态失效";
+                        try {
+                            res.sendJson(502, errJson("账号「" + pick.slot.name + "」登录态失效，请到「对话页」重新登录该账号", "server_error"));
+                        } catch (Exception ignored) {}
+                        return;
+                    }
+                    if (pick.needNewChat) {
+                        try { DeepSeekController.get().newChat(); Thread.sleep(300L); } catch (Exception ignored) {}
+                    }
+                    lastAccountInfo = pick.slot.name;
+                    Util.log("本次请求使用账号: " + pick.slot.name + (pick.needNewChat ? "（已新开对话）" : ""));
+                }
                 // 附件：逐个注入官网，等待上传/解析
                 for (PromptBuilder.Attachment a : pb.attachments) {
                     JSONObject r = DeepSeekController.get().attachFile(a.name, a.mime, a.base64, 150);
@@ -455,6 +549,10 @@ public class ApiService extends Service {
                 try { res.sendJson(500, errJson(e.getMessage(), "server_error")); } catch (Exception ignored) {}
             } finally {
                 if (!stream) { try { res.close(); } catch (Exception ignored) {} }
+                if (pick != null && pick.slot != null && !settled[0]) {
+                    boolean rl = lookRateLimited(lastCallInfo);
+                    AccountPool.get().release(pick.slot, !rl, rl);
+                }
                 inflight.decrementAndGet();
                 updateNotification();
             }

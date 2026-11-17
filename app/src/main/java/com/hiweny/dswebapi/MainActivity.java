@@ -24,6 +24,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
@@ -44,7 +45,13 @@ public class MainActivity extends Activity {
     private Theme theme;
     private LinearLayout rootView, bottomNav;
     private ScrollView controlScroll;
-    private FrameLayout webPanel;
+    private LinearLayout webPanel;
+    private FrameLayout webContainer;
+    private LinearLayout accountBar, accountChips;
+    private TextView tvAccounts;
+    private boolean addingMode = false;
+    private String pendingAddId = "";
+    private String accountSig = "";
     private View controlPanel;
     private int currentTab = TAB_CONTROL;
 
@@ -81,6 +88,7 @@ public class MainActivity extends Activity {
         }
         handler.post(attachWebRunnable);
         handler.postDelayed(statsTask, 1500L);
+        AccountPool.get().ensureLoaded(this);
         WebHost.ensure(this, WebHost.loadBridgeJs(this));
     }
 
@@ -88,7 +96,7 @@ public class MainActivity extends Activity {
         int tries = 0;
         @Override public void run() {
             if (WebHost.get() != null) {
-                if (webPanel != null) WebHost.attachTo(webPanel);
+                if (webPanel != null) WebHost.attachTo(webContainer);
             } else if (tries++ < 20) {
                 handler.postDelayed(this, 300L);
             }
@@ -126,7 +134,7 @@ public class MainActivity extends Activity {
             theme = Theme.of(this);
             WebHost.setDark(theme.dark);
             buildUi();
-            WebHost.attachTo(webPanel);
+            WebHost.attachTo(webContainer);
             handler.post(attachWebRunnable);
         }
     }
@@ -134,7 +142,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (webPanel != null) WebHost.attachTo(webPanel);
+        if (webPanel != null) WebHost.attachTo(webContainer);
         refreshStats();
     }
 
@@ -177,9 +185,14 @@ public class MainActivity extends Activity {
         FrameLayout container = new FrameLayout(this);
         controlPanel = buildControlPanel();
         container.addView(controlPanel, new FrameLayout.LayoutParams(-1, -1));
-        webPanel = new FrameLayout(this);
+        webPanel = new LinearLayout(this);
+        webPanel.setOrientation(LinearLayout.VERTICAL);
         webPanel.setBackgroundColor(theme.bg());
         webPanel.setVisibility(View.GONE);
+        accountBar = buildAccountBar();
+        webPanel.addView(accountBar, new LinearLayout.LayoutParams(-1, -2));
+        webContainer = new FrameLayout(this);
+        webPanel.addView(webContainer, new LinearLayout.LayoutParams(-1, 0, 1f));
         container.addView(webPanel, new FrameLayout.LayoutParams(-1, -1));
         rootView.addView(container, new LinearLayout.LayoutParams(-1, 0, 1f));
         rootView.addView(buildBottomNav(), new LinearLayout.LayoutParams(-1, -2));
@@ -263,7 +276,7 @@ public class MainActivity extends Activity {
         boolean control = tab == TAB_CONTROL;
         controlPanel.setVisibility(control ? View.VISIBLE : View.GONE);
         webPanel.setVisibility(control ? View.GONE : View.VISIBLE);
-        if (!control) WebHost.attachTo(webPanel);
+        if (!control) WebHost.attachTo(webContainer);
         updateNavStyle();
         if (control) refreshStats();
     }
@@ -319,7 +332,11 @@ public class MainActivity extends Activity {
         controlScroll.setFillViewport(true);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        controlScroll.addView(col, new LinearLayout.LayoutParams(-1, -2));
+        // 平板适配：内容最宽 760dp 并居中，避免一行拉得过长
+        int scrW = getResources().getDisplayMetrics().widthPixels - dp(28);
+        FrameLayout wrap = new FrameLayout(this);
+        controlScroll.addView(wrap, new LinearLayout.LayoutParams(-1, -2));
+        wrap.addView(col, new FrameLayout.LayoutParams(Math.min(scrW, dp(760)), -2, Gravity.CENTER_HORIZONTAL));
 
         // 标题
         TextView h = new TextView(this);
@@ -371,6 +388,29 @@ public class MainActivity extends Activity {
         set.addView(makeSwitch("保持屏幕常亮", "提高后台存活率（可关）", "keep_screen"));
         set.addView(makeSwitch("悬浮球（快捷入口 / 助保活）", "屏幕上常驻小圆球，AI 回复时有动效；点击回到 App", "floating_ball"));
         col.addView(set);
+
+        // 多账号
+        LinearLayout accCard = card();
+        accCard.addView(cardTitle("多账号轮换"));
+        tvAccounts = line("账号", "—");
+        accCard.addView(tvAccounts);
+        Switch rot = new Switch(this);
+        rot.setText("启用轮换（严格顺序，用完一个换下一个）");
+        rot.setTextSize(13f);
+        rot.setTextColor(theme.text());
+        rot.setPadding(0, dp(4), 0, dp(4));
+        rot.setChecked(AccountVault.rotateEnabled(this));
+        rot.setOnCheckedChangeListener((b, checked) -> {
+            AccountVault.setRotateEnabled(MainActivity.this, checked);
+            toast(checked ? "轮换已开启：按顺序轮流使用各账号" : "轮换已关闭：只用当前账号");
+            accountSig = "";
+            refreshAccountBar();
+        });
+        accCard.addView(rot);
+        accCard.addView(makeVaultRow("每账号连发次数", "limit"));
+        accCard.addView(makeVaultRow("限流冷却（分钟）", "cooldown"));
+        accCard.addView(rowButtons(new String[][]{{"去对话页管理账号", "goto_accounts"}}));
+        col.addView(accCard);
 
         // 操作
         LinearLayout act = card();
@@ -585,6 +625,7 @@ public class MainActivity extends Activity {
             case "battery": requestBatteryWhitelist(); break;
             case "notif": requestNotifPermission(); break;
             case "clearlog": Util.clearLog(); refreshStats(); toast("日志已清空"); break;
+            case "goto_accounts": switchTab(TAB_WEB); toast("顶部就是账号栏，点「＋ 添加」新增"); break;
         }
     }
 
@@ -643,6 +684,18 @@ public class MainActivity extends Activity {
         tvBase.setText("http://127.0.0.1:" + currentSetting("port") + "/v1");
         tvKey.setText(String.valueOf(currentSetting("apikey")));
         if (tvLog != null) tvLog.setText(Util.logText());
+        if (tvAccounts != null) {
+            List<AccountSlot> ls = AccountPool.get().snapshot();
+            if (ls.isEmpty()) {
+                tvAccounts.setText("尚未添加（到「对话页」顶部点「＋ 添加」）");
+            } else {
+                AccountSlot a = AccountPool.get().find(AccountVault.activeId(this));
+                tvAccounts.setText(ls.size() + " 个 · 当前：" + (a == null ? "—" : a.name)
+                        + " · " + (AccountVault.rotateEnabled(this) ? "轮换开" : "轮换关")
+                        + " · 连发上限 " + AccountVault.sendLimit(this));
+            }
+        }
+        refreshAccountBar();
     }
 
     /* ================= 文件选择 ================= */
@@ -679,6 +732,282 @@ public class MainActivity extends Activity {
             filePathCallback.onReceiveValue(results);
             filePathCallback = null;
         }
+    }
+
+
+    /* ================= 多账号顶栏 ================= */
+
+    private boolean isTablet() {
+        return getResources().getConfiguration().smallestScreenWidthDp >= 600;
+    }
+
+    private LinearLayout buildAccountBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.VERTICAL);
+        bar.setBackgroundColor(theme.headerBg());
+
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        hs.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        accountChips = new LinearLayout(this);
+        accountChips.setOrientation(LinearLayout.HORIZONTAL);
+        accountChips.setGravity(Gravity.CENTER_VERTICAL);
+        accountChips.setPadding(dp(6), dp(6), dp(6), dp(6));
+        hs.addView(accountChips, new LinearLayout.LayoutParams(-2, -2));
+        bar.addView(hs, new LinearLayout.LayoutParams(-1, -2));
+
+        View div = new View(this);
+        div.setBackgroundColor(theme.divider());
+        bar.addView(div, new LinearLayout.LayoutParams(-1, Math.max(1, dp(1))));
+        return bar;
+    }
+
+    private TextView makeChip(String text, boolean active) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(isTablet() ? 13.5f : 12.5f);
+        t.setSingleLine(true);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(12), 0, dp(12), 0);
+        t.setTextColor(active ? 0xFFFFFFFF : theme.text());
+        t.setBackground(active ? roundedBg(theme.accent(), 18)
+                : strokeBg(theme.cardBg(), theme.divider(), 18));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(isTablet() ? 38 : 32));
+        lp.setMargins(dp(4), 0, dp(4), 0);
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    private String accountSignature() {
+        StringBuilder sb = new StringBuilder();
+        String active = AccountVault.activeId(this);
+        for (AccountSlot s : AccountPool.get().snapshot()) {
+            sb.append(s.id).append(s.name).append(s.stateText()).append(s.enabled ? 1 : 0).append('|');
+        }
+        sb.append("A=").append(active).append("|add=").append(addingMode ? pendingAddId : "")
+          .append("|n=").append(AccountPool.get().size());
+        return sb.toString();
+    }
+
+    private void refreshAccountBar() {
+        if (accountChips == null) return;
+        AccountPool.get().ensureLoaded(this);
+        String sig = accountSignature();
+        if (sig.equals(accountSig)) return;
+        accountSig = sig;
+        accountChips.removeAllViews();
+
+        String activeId = AccountVault.activeId(this);
+        for (final AccountSlot s : AccountPool.get().snapshot()) {
+            boolean active = s.id.equals(activeId);
+            String label = s.name;
+            if (!s.enabled) label += " · 停用";
+            else if (s.inCooldown()) label += " · 冷却 " + AccountSlot.fmtLeft(s.cooldownLeftSec());
+            else if (!s.loggedIn) label += " · 未登录";
+            else label += " · " + s.sentInSession + "/" + AccountVault.sendLimit(this);
+            TextView chip = makeChip(label, active);
+            chip.setOnClickListener(v -> onChipTap(s));
+            chip.setOnLongClickListener(v -> { showAccountMenu(s); return true; });
+            accountChips.addView(chip);
+        }
+
+        TextView add = makeChip(addingMode ? "＋ 登录中…" : "＋ 添加", false);
+        add.setOnClickListener(v -> { if (!addingMode) addAccountFlow(); });
+        accountChips.addView(add);
+
+        if (addingMode) {
+            TextView save = makeChip("保存登录", true);
+            save.setOnClickListener(v -> confirmSaveLogin());
+            accountChips.addView(save);
+            TextView cancel = makeChip("取消", false);
+            cancel.setOnClickListener(v -> cancelAdd());
+            accountChips.addView(cancel);
+        }
+    }
+
+    private void onChipTap(final AccountSlot s) {
+        if (addingMode) { toast("请先点「保存登录」或「取消」，再切换账号"); return; }
+        final String activeId = AccountVault.activeId(this);
+        if (s.id.equals(activeId)) { toast("当前已是「" + s.name + "」"); return; }
+        toast("正在切换到「" + s.name + "」…");
+        new Thread(() -> {
+            AccountSlot cur = AccountPool.get().find(activeId);
+            boolean ok = AccountSwitcher.switchTo(s, cur, 25000L);
+            if (ok) {
+                AccountVault.setActiveId(MainActivity.this, s.id);
+                AccountPool.get().persist();
+                handler.post(() -> { toast("已切换到「" + s.name + "」"); accountSig = ""; refreshAccountBar(); });
+            } else {
+                handler.post(() -> {
+                    toast("「" + s.name + "」登录态失效，长按它选「重新登录」");
+                    s.loggedIn = false;
+                    accountSig = "";
+                    refreshAccountBar();
+                });
+            }
+        }).start();
+    }
+
+    private void addAccountFlow() {
+        final EditText et = new EditText(this);
+        et.setHint("账号备注，如：账号 2");
+        et.setTextColor(theme.text());
+        new AlertDialog.Builder(this)
+                .setTitle("添加账号")
+                .setMessage("确定后会清空当前页面的登录态，请在页面上登录新账号；登录完成后点顶部「保存登录」。")
+                .setView(et)
+                .setPositiveButton("开始登录", (d, w) -> {
+                    String name = et.getText().toString().trim();
+                    if (name.isEmpty()) name = "账号 " + (AccountPool.get().size() + 1);
+                    AccountSlot cur = AccountPool.get().find(AccountVault.activeId(MainActivity.this));
+                    AccountSwitcher.snapshot(cur);
+                    AccountPool pool = AccountPool.get();
+                    AccountSlot s = pool.add(name);
+                    pool.persist();
+                    pendingAddId = s.id;
+                    addingMode = true;
+                    accountSig = "";
+                    refreshAccountBar();
+                    new Thread(() -> AccountSwitcher.prepareForLogin()).start();
+                    toast("请登录「" + name + "」，完成后点顶部「保存登录」");
+                })
+                .setNegativeButton("取消", null).show();
+    }
+
+    private void confirmSaveLogin() {
+        final AccountSlot s = AccountPool.get().find(pendingAddId);
+        if (s == null) { addingMode = false; pendingAddId = ""; accountSig = ""; refreshAccountBar(); return; }
+        toast("正在保存登录态…");
+        new Thread(() -> {
+            boolean logged = AccountSwitcher.awaitReady(20000L);
+            if (logged) AccountSwitcher.bindCurrent(s);
+            final boolean ok = logged && s.hasCookie();
+            if (ok) {
+                AccountVault.setActiveId(MainActivity.this, s.id);
+                s.loggedIn = true;
+                AccountPool.get().persist();
+            }
+            handler.post(() -> {
+                addingMode = false;
+                pendingAddId = "";
+                accountSig = "";
+                toast(ok ? ("已保存「" + s.name + "」") : "还没检测到登录，请先完成登录再点保存");
+                refreshAccountBar();
+            });
+        }).start();
+    }
+
+    private void cancelAdd() {
+        final AccountSlot cur = AccountPool.get().find(AccountVault.activeId(this));
+        AccountSlot s = AccountPool.get().find(pendingAddId);
+        if (s != null && !s.hasCookie()) AccountPool.get().remove(s.id);
+        addingMode = false;
+        pendingAddId = "";
+        accountSig = "";
+        refreshAccountBar();
+        if (cur != null && cur.hasCookie()) {
+            new Thread(() -> AccountSwitcher.switchTo(cur, null, 30000L)).start();
+        }
+    }
+
+    private void showAccountMenu(final AccountSlot s) {
+        final String[] items = {"设为当前账号", "重新登录（清除登录态）", "重命名",
+                s.enabled ? "停用该账号" : "启用该账号", "删除该账号"};
+        new AlertDialog.Builder(this).setTitle(s.name).setItems(items, (d, which) -> {
+            switch (which) {
+                case 0: onChipTap(s); break;
+                case 1: reloginAccount(s); break;
+                case 2: renameAccount(s); break;
+                case 3:
+                    AccountPool.get().setEnabled(s.id, !s.enabled);
+                    accountSig = ""; refreshAccountBar();
+                    toast(s.enabled ? "已启用" : "已停用");
+                    break;
+                case 4: removeAccount(s); break;
+            }
+        }).show();
+    }
+
+    private void reloginAccount(final AccountSlot s) {
+        new AlertDialog.Builder(this).setTitle("重新登录「" + s.name + "」")
+                .setMessage("会清空该账号的登录态并回到登录页，登录完成后点顶部「保存登录」。")
+                .setPositiveButton("开始", (d, w) -> {
+                    s.cookies = "";
+                    s.loggedIn = false;
+                    AccountPool.get().persist();
+                    AccountVault.setActiveId(MainActivity.this, s.id);
+                    addingMode = true;
+                    pendingAddId = s.id;
+                    accountSig = "";
+                    refreshAccountBar();
+                    new Thread(() -> AccountSwitcher.prepareForLogin()).start();
+                }).setNegativeButton("取消", null).show();
+    }
+
+    private void renameAccount(final AccountSlot s) {
+        final EditText et = new EditText(this);
+        et.setText(s.name);
+        et.setTextColor(theme.text());
+        new AlertDialog.Builder(this).setTitle("重命名").setView(et)
+                .setPositiveButton("保存", (d, w) -> {
+                    AccountPool.get().rename(s.id, et.getText().toString());
+                    accountSig = "";
+                    refreshAccountBar();
+                }).setNegativeButton("取消", null).show();
+    }
+
+    private void removeAccount(final AccountSlot s) {
+        if (AccountPool.get().size() <= 1) { toast("至少保留一个账号"); return; }
+        new AlertDialog.Builder(this).setTitle("删除「" + s.name + "」？")
+                .setMessage("只删除本机保存的登录快照，不影响 DeepSeek 账号本身。")
+                .setPositiveButton("删除", (d, w) -> {
+                    AccountPool.get().remove(s.id);
+                    if (s.id.equals(AccountVault.activeId(MainActivity.this))) {
+                        List<AccountSlot> l = AccountPool.get().snapshot();
+                        if (!l.isEmpty()) AccountVault.setActiveId(MainActivity.this, l.get(0).id);
+                    }
+                    accountSig = "";
+                    refreshAccountBar();
+                    toast("已删除");
+                }).setNegativeButton("取消", null).show();
+    }
+
+    private LinearLayout makeVaultRow(final String name, final String kind) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(7), 0, dp(7));
+        TextView t = new TextView(this);
+        t.setText(name);
+        t.setTextSize(13.5f);
+        t.setTextColor(theme.text());
+        t.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(t);
+        final TextView v = new TextView(this);
+        v.setText(String.valueOf("limit".equals(kind) ? AccountVault.sendLimit(this) : AccountVault.cooldownMin(this)));
+        v.setTextSize(13.5f);
+        v.setTextColor(theme.accent());
+        row.addView(v);
+        row.setOnClickListener(x -> {
+            final EditText et = new EditText(this);
+            et.setInputType(InputType.TYPE_CLASS_NUMBER);
+            et.setText(v.getText().toString());
+            et.setTextColor(theme.text());
+            new AlertDialog.Builder(this).setTitle("修改 " + name).setView(et)
+                    .setPositiveButton("保存", (d, w) -> {
+                        try {
+                            int n = Integer.parseInt(et.getText().toString().trim());
+                            if ("limit".equals(kind)) AccountVault.setSendLimit(MainActivity.this, n);
+                            else AccountVault.setCooldownMin(MainActivity.this, n);
+                            v.setText(String.valueOf("limit".equals(kind)
+                                    ? AccountVault.sendLimit(MainActivity.this)
+                                    : AccountVault.cooldownMin(MainActivity.this)));
+                            accountSig = "";
+                            refreshAccountBar();
+                        } catch (Exception ignored) {}
+                    }).setNegativeButton("取消", null).show();
+        });
+        return row;
     }
 
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }

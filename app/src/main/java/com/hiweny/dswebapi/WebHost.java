@@ -117,6 +117,21 @@ public final class WebHost {
         if (wv != null) runOnMain(() -> { try { wv.reload(); } catch (Throwable ignored) {} });
     }
 
+    /** 加载指定地址（切换账号时用）：先把页面就绪标记复位，避免旧页面的就绪状态被误判。 */
+    public static void loadUrl(final String url) {
+        final WebView wv = sWebView;
+        if (wv == null) return;
+        runOnMain(() -> {
+            sPageLoaded = false;
+            try {
+                wv.loadUrl(url);
+                Util.log("页面重新加载: " + url);
+            } catch (Throwable t) {
+                Util.log("loadUrl 失败: " + t.getMessage());
+            }
+        });
+    }
+
     public static void injectBridge() { DeepSeekController.get().injectBridge(); }
 
     /** 彻底销毁（仅在用户主动停止服务时调用）。 */
