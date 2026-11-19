@@ -1,5 +1,7 @@
 package com.hiweny.dswebapi;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.webkit.CookieManager;
 import android.webkit.WebView;
 
@@ -30,7 +32,13 @@ public final class AccountSwitcher {
             try {
                 CookieManager cm = CookieManager.getInstance();
                 cm.setAcceptCookie(true);
-                String c = cm.getCookie(URL);
+                String u = URL;
+                WebView wv = WebHost.get();
+                if (wv != null) {
+                    String cur = wv.getUrl();
+                    if (cur != null && cur.contains("deepseek.com")) u = cur;   // 用当前页面读，少漏 path
+                }
+                String c = cm.getCookie(u);
                 out[0] = c == null ? "" : c;
             } catch (Throwable t) {
                 Util.log("读取 Cookie 失败: " + t.getMessage());
@@ -76,9 +84,17 @@ public final class AccountSwitcher {
                         cm.flush();
                     } catch (Throwable e) {
                         Util.log("写入 Cookie 失败: " + e.getMessage());
-                    } finally {
-                        l.countDown();
                     }
+                    // setCookie 是异步落盘的，稍等再回读一次，确认真的写进去了
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        try {
+                            String now = cm.getCookie(URL);
+                            int got = Util.cookieCount(now);
+                            int want = Util.cookieCount(kvAll);
+                            if (want > 0) Util.log("Cookie 写回 " + want + " 条，回读 " + got + " 条");
+                        } catch (Throwable ignored) {}
+                        l.countDown();
+                    }, 260);
                 });
             } catch (Throwable t) {
                 Util.log("清空 Cookie 失败: " + t.getMessage());
@@ -183,10 +199,20 @@ public final class AccountSwitcher {
             return true;
         }
         applyCookies(target.cookies, COOKIE_WAIT_MS);
-        writeStorage(target.storage, STORAGE_WAIT_MS);   // 还原该账号的 localStorage（空则清空）
+        // 只有确实存过 localStorage 快照才还原；否则保持原样（清空有可能带走登录信息）
+        if (target.storage != null && !target.storage.isEmpty()) {
+            writeStorage(target.storage, STORAGE_WAIT_MS);
+        }
         ApiService.resetProbe();
         WebHost.loadUrl(URL);
-        boolean ok = awaitReady(timeoutMs);
+        boolean ok = awaitReady(Math.min(timeoutMs, 15000L));
+        if (!ok && target.hasCookie()) {
+            Util.log("切换后未检测到登录，重试一次（重写 Cookie 再加载）");
+            applyCookies(target.cookies, COOKIE_WAIT_MS);
+            ApiService.resetProbe();
+            WebHost.loadUrl(URL);
+            ok = awaitReady(Math.max(12000L, timeoutMs / 2));
+        }
         target.loggedIn = ok;
         if (ok) target.lastLoginAt = System.currentTimeMillis();
         Util.log("切换到账号 " + target.name + " → " + (ok ? "已登录" : "未登录/超时"));

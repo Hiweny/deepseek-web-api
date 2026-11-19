@@ -26,6 +26,14 @@ public final class Util {
         Log.d(TAG, msg);
     }
 
+    /** Cookie header 里的条目数（粗略统计，用于诊断）。 */
+    public static int cookieCount(String cookies) {
+        if (cookies == null || cookies.isEmpty()) return 0;
+        int n = 0;
+        for (String p : cookies.split(";")) if (p.indexOf('=') > 0) n++;
+        return n;
+    }
+
     /** 本机局域网 IPv4（优先 192.168.x.x），没有则返回空串。 */
     public static String lanIp() {
         String fallback = "";

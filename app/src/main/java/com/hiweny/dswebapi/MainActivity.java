@@ -841,7 +841,7 @@ public class MainActivity extends Activity {
             String label = s.name;
             if (!s.enabled) label += " · 停用";
             else if (s.inCooldown()) label += " · 冷却 " + AccountSlot.fmtLeft(s.cooldownLeftSec());
-            else if (!s.loggedIn) label += " · 未登录";
+            else if (!s.loggedIn) label += " · 未保存登录";
             else label += " · " + s.sentInSession + "/" + AccountVault.sendLimit(this);
             TextView chip = makeChip(label, active);
             chip.setOnClickListener(v -> onChipTap(s));
@@ -891,23 +891,28 @@ public class MainActivity extends Activity {
         Util.log("点击「＋ 添加账号」");
         AccountPool pool = AccountPool.get();
         pool.ensureLoaded(this);
-        final AccountSlot cur = pool.find(AccountVault.activeId(this));
         final String name = "账号 " + (pool.size() + 1);
-        toast("正在准备登录环境…");
+        toast("正在保存当前登录态…");
         new Thread(() -> {
-            // 先把当前账号完整存下来（Cookie + localStorage），再新增槽位
-            try {
-                AccountSwitcher.snapshot(cur);
-                if (cur != null) {
-                    cur.storage = AccountSwitcher.readStorage();
-                    AccountVault.saveStorage(MainActivity.this, cur.id, cur.storage);
-                }
-                AccountPool.get().persist();
-            } catch (Throwable t) {
-                Util.log("保存当前账号失败: " + t.getMessage());
+            AccountPool p = AccountPool.get();
+            AccountSlot cur = p.find(AccountVault.activeId(MainActivity.this));
+            if (cur == null) {
+                cur = p.add("账号 1");
+                AccountVault.setActiveId(MainActivity.this, cur.id);
             }
-            final AccountSlot s = AccountPool.get().add(name);
-            AccountPool.get().persist();
+            // 关键：先把当前登录态完整绑定（Cookie + localStorage），绑不到就中止，
+            // 绝不在快照为空的情况下清空页面，否则第一个账号的登录就没了。
+            AccountSwitcher.bindCurrent(cur);
+            p.persist();
+            if (!cur.hasCookie()) {
+                Util.log("添加账号中止：当前账号 Cookie 为空，未做清空");
+                handler.post(() -> toast("当前账号登录态还没就绪，等页面加载完再点一次"));
+                return;
+            }
+            Util.log("已保存「" + cur.name + "」快照：" + Util.cookieCount(cur.cookies) + " 条 Cookie");
+
+            final AccountSlot s = p.add(name);
+            p.persist();
             handler.post(() -> {
                 pendingAddId = s.id;
                 addingMode = true;
@@ -956,21 +961,38 @@ public class MainActivity extends Activity {
     }
 
     private void showAccountMenu(final AccountSlot s) {
-        final String[] items = {"设为当前账号", "重新登录（清除登录态）", "重命名",
+        final String[] items = {"设为当前账号", "重新登录（清除登录态）", "查看登录快照", "重命名",
                 s.enabled ? "停用该账号" : "启用该账号", "删除该账号"};
         new AlertDialog.Builder(this).setTitle(s.name).setItems(items, (d, which) -> {
             switch (which) {
                 case 0: onChipTap(s); break;
                 case 1: reloginAccount(s); break;
-                case 2: renameAccount(s); break;
-                case 3:
+                case 2: showAccountSnapshot(s); break;
+                case 3: renameAccount(s); break;
+                case 4:
                     AccountPool.get().setEnabled(s.id, !s.enabled);
                     accountSig = ""; refreshAccountBar();
                     toast(s.enabled ? "已启用" : "已停用");
                     break;
-                case 4: removeAccount(s); break;
+                case 5: removeAccount(s); break;
             }
         }).show();
+    }
+
+    private void showAccountSnapshot(final AccountSlot s) {
+        String ck = s.cookies == null ? "" : s.cookies;
+        int n = Util.cookieCount(ck);
+        int bytes = ck.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        int lsKb = (s.storage == null || s.storage.isEmpty()) ? 0 : (s.storage.length() * 3 / 4) / 1024;
+        String when = s.lastLoginAt == 0 ? "—" : new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
+                .format(new java.util.Date(s.lastLoginAt));
+        String msg = "Cookie：" + n + " 条 / " + bytes + " 字节\n"
+                + "localStorage：" + (lsKb > 0 ? lsKb + " KB" : "未保存") + "\n"
+                + "设备号：" + (s.deviceId == null || s.deviceId.isEmpty() ? "—" : s.deviceId) + "\n"
+                + "上次登录：" + when + "\n"
+                + "累计调用：" + s.totalCalls + "（成功 " + s.okCalls + "）";
+        new AlertDialog.Builder(this).setTitle("「" + s.name + "」登录快照")
+                .setMessage(msg).setPositiveButton("知道了", null).show();
     }
 
     private void reloginAccount(final AccountSlot s) {
