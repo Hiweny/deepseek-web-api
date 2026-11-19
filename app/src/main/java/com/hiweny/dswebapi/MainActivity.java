@@ -199,10 +199,10 @@ public class MainActivity extends Activity {
         webPanel.setOrientation(LinearLayout.VERTICAL);
         webPanel.setBackgroundColor(theme.bg());
         webPanel.setVisibility(View.GONE);
-        accountBar = buildAccountBar();
-        webPanel.addView(accountBar, new LinearLayout.LayoutParams(-1, -2));
         webContainer = new FrameLayout(this);
         webPanel.addView(webContainer, new LinearLayout.LayoutParams(-1, 0, 1f));
+        accountBar = buildAccountBar();      // 放在底栏正上方
+        webPanel.addView(accountBar, new LinearLayout.LayoutParams(-1, -2));
         container.addView(webPanel, new FrameLayout.LayoutParams(-1, -1));
         rootView.addView(container, new LinearLayout.LayoutParams(-1, 0, 1f));
         rootView.addView(buildBottomNav(), new LinearLayout.LayoutParams(-1, -2));
@@ -648,7 +648,7 @@ public class MainActivity extends Activity {
             case "battery": requestBatteryWhitelist(); break;
             case "notif": requestNotifPermission(); break;
             case "clearlog": Util.clearLog(); refreshStats(); toast("日志已清空"); break;
-            case "goto_accounts": switchTab(TAB_WEB); toast("顶部就是账号栏，点「＋ 添加」新增"); break;
+            case "goto_accounts": switchTab(TAB_WEB); toast("底栏上方就是账号栏，点「＋ 添加」新增"); break;
             case "add_account": switchTab(TAB_WEB); handler.postDelayed(this::addAccountFlow, 250); break;
             case "copy_lan": {
                 String ip = Util.lanIp();
@@ -723,7 +723,7 @@ public class MainActivity extends Activity {
         if (tvAccounts != null) {
             List<AccountSlot> ls = AccountPool.get().snapshot();
             if (ls.isEmpty()) {
-                tvAccounts.setText("尚未添加（到「对话页」顶部点「＋ 添加」）");
+                tvAccounts.setText("尚未添加（到「对话页」底栏上方点「＋ 添加」）");
             } else {
                 AccountSlot a = AccountPool.get().find(AccountVault.activeId(this));
                 tvAccounts.setText(ls.size() + " 个 · 当前：" + (a == null ? "—" : a.name)
@@ -790,11 +790,11 @@ public class MainActivity extends Activity {
         accountChips.setGravity(Gravity.CENTER_VERTICAL);
         accountChips.setPadding(dp(6), dp(6), dp(6), dp(6));
         hs.addView(accountChips, new LinearLayout.LayoutParams(-2, -2));
-        bar.addView(hs, new LinearLayout.LayoutParams(-1, -2));
 
         View div = new View(this);
         div.setBackgroundColor(theme.divider());
         bar.addView(div, new LinearLayout.LayoutParams(-1, Math.max(1, dp(1))));
+        bar.addView(hs, new LinearLayout.LayoutParams(-1, -2));
         return bar;
     }
 
@@ -887,7 +887,7 @@ public class MainActivity extends Activity {
     }
 
     private void addAccountFlow() {
-        if (addingMode) { toast("正在等待登录保存，点顶部「取消」可退出"); return; }
+        if (addingMode) { toast("正在等待登录保存，点下方「取消」可退出"); return; }
         Util.log("点击「＋ 添加账号」");
         AccountPool pool = AccountPool.get();
         pool.ensureLoaded(this);
@@ -913,7 +913,7 @@ public class MainActivity extends Activity {
                 addingMode = true;
                 accountSig = "";
                 refreshAccountBar();
-                toast("请在页面上登录「" + name + "」，完成后点顶部「保存登录」");
+                toast("请在页面上登录「" + name + "」，完成后点下方「保存登录」");
             });
             AccountSwitcher.prepareForLogin();
         }, "add-account").start();
@@ -975,7 +975,7 @@ public class MainActivity extends Activity {
 
     private void reloginAccount(final AccountSlot s) {
         new AlertDialog.Builder(this).setTitle("重新登录「" + s.name + "」")
-                .setMessage("会清空该账号的登录态并回到登录页，登录完成后点顶部「保存登录」。")
+                .setMessage("会清空该账号的登录态并回到登录页，登录完成后点下方「保存登录」。")
                 .setPositiveButton("开始", (d, w) -> {
                     s.cookies = "";
                     s.loggedIn = false;
