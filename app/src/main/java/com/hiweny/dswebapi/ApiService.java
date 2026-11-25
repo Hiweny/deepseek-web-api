@@ -298,9 +298,20 @@ public class ApiService extends Service {
 
     private boolean autoNewChat() { return Util.prefs(this).getBoolean("auto_newchat", true); }
 
-    /** 单请求 prompt 字符上限（0=不限；网页端硬上限约 2621440 字符，默认留约 43% 余量）。 */
+    /**
+     * 单请求 prompt 字符上限（0=不限）。
+     * 2026-11 起官网把 C 端单次输入压到约 4 万字，默认取 38000 留一点余量；
+     * 历史值 1500000 已被上游拒绝，务必不要改回去。
+     */
     private int maxPromptChars() {
-        return Math.max(0, Util.prefs(this).getInt("max_prompt_chars", 1500000));
+        android.content.SharedPreferences sp = Util.prefs(this);
+        if (!sp.getBoolean("prompt_limit_migrated_v2", false)) {
+            int v = sp.getInt("max_prompt_chars", 38000);
+            // 旧默认 1500000（对应官网早期的 2621440 硬上限）现在必然被拒，统一迁到 38000
+            if (v > 100000) sp.edit().putInt("max_prompt_chars", 38000).apply();
+            sp.edit().putBoolean("prompt_limit_migrated_v2", true).apply();
+        }
+        return Math.max(0, sp.getInt("max_prompt_chars", 38000));
     }
 
     /** 单请求图片附件数量上限（0=不限；网页端实测成功 40 张、失败 52 张，默认取 40）。 */
@@ -358,6 +369,11 @@ public class ApiService extends Service {
     static boolean lookContextLimit(String err) {
         if (err == null || err.isEmpty()) return false;
         if (err.toUpperCase(java.util.Locale.ROOT).contains("CONTEXT_LIMIT")) return true;
+        if (err.toUpperCase(java.util.Locale.ROOT).contains("INPUT_EXCEEDS_LIMIT")) return true;
+        String u = err.toUpperCase(java.util.Locale.ROOT);
+        if (u.contains("CHARACTER LIMIT") || u.contains("INPUT TOO LONG")) return true;
+        if (err.contains("字数") && (err.contains("超") || err.contains("限制") || err.contains("上限"))) return true;
+        if (err.contains("输入过长") || err.contains("内容过长")) return true;
         if (err.contains("上下文") && (err.contains("上限") || err.contains("超出") || err.contains("过长") || err.contains("达到"))) return true;
         if (err.contains("长度上限") || err.contains("达到最大长度") || err.contains("输入过长")
                 || err.contains("内容过长") || err.contains("文本过长") || err.contains("字数上限")) return true;
@@ -484,6 +500,7 @@ public class ApiService extends Service {
         o.put("total_calls", totalCalls.get());
         o.put("ok_calls", okCalls.get());
         o.put("endpoint", "http://127.0.0.1:" + port() + "/v1");
+        o.put("prompt_limit_chars", maxPromptChars());
         o.put("accounts", AccountPool.get().size());
         o.put("rotate", AccountVault.rotateEnabled(this));
         AccountSlot as = AccountPool.get().find(AccountVault.activeId(this));

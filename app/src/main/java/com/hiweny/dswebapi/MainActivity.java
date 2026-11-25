@@ -397,6 +397,15 @@ public class MainActivity extends Activity {
         set.addView(makeSwitch("无状态模式", "每次发送完整对话（不依赖官网会话记忆）", "stateless"));
         set.addView(makeSwitch("自动新开对话", "上下文达阈值时自动新建对话，并尽力删除旧会话", "auto_newchat"));
         set.addView(makeRow("上下文上限（tokens）", "context_tokens"));
+        set.addView(makeRow("单次输入上限（字符）", "max_prompt_chars"));
+        TextView limitHint = new TextView(this);
+        limitHint.setText("这是每次发给官网的整段提示词的上限：系统指令 + 工具定义 + 历史对话 + 本次问题 + 工具返回，全都算在内。"
+                + "2026-11 起官网单次约 4 万字，建议 38000；超出部分会在本机按行抽样压缩后再发。"
+                + "调大不会突破官网限额，只会更容易被拒；填 0 = 不限制（不推荐）。");
+        limitHint.setTextSize(11f);
+        limitHint.setTextColor(theme.textSub());
+        limitHint.setPadding(0, 0, 0, dp(4));
+        set.addView(limitHint);
         set.addView(makeRow("新对话阈值（%）", "newchat_threshold"));
         set.addView(makeSwitch("保持屏幕常亮", "提高后台存活率（可关）", "keep_screen"));
         set.addView(makeSwitch("悬浮球（快捷入口 / 助保活）", "屏幕上常驻小圆球，AI 回复时有动效；点击回到 App", "floating_ball"));
@@ -602,6 +611,7 @@ public class MainActivity extends Activity {
             case "search_mode": return sp.getString("search_mode", "off");
             case "context_tokens": return sp.getInt("context_tokens", 1000000);
             case "newchat_threshold": return sp.getInt("newchat_threshold", 70);
+            case "max_prompt_chars": return sp.getInt("max_prompt_chars", 38000);
         }
         return "";
     }
@@ -612,6 +622,7 @@ public class MainActivity extends Activity {
         else if ("timeout".equals(key)) { try { e.putInt("timeout", Integer.parseInt(value)); } catch (Exception ignored) {} }
         else if ("context_tokens".equals(key)) { try { e.putInt("context_tokens", Integer.parseInt(value)); } catch (Exception ignored) {} }
         else if ("newchat_threshold".equals(key)) { try { e.putInt("newchat_threshold", Integer.parseInt(value)); } catch (Exception ignored) {} }
+        else if ("max_prompt_chars".equals(key)) { try { e.putInt("max_prompt_chars", Math.max(0, Integer.parseInt(value))); } catch (Exception ignored) {} }
         else e.putString(key, value);
         e.apply();
     }
@@ -621,13 +632,17 @@ public class MainActivity extends Activity {
         et.setText(String.valueOf(currentSetting(key)));
         et.setTextColor(theme.text());
         et.setInputType(("port".equals(key) || "timeout".equals(key) || "context_tokens".equals(key)
-                || "newchat_threshold".equals(key)) ? InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT);
+                || "newchat_threshold".equals(key) || "max_prompt_chars".equals(key))
+                ? InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT);
         new AlertDialog.Builder(this).setTitle("修改 " + name).setView(et)
                 .setPositiveButton("保存", (d, w) -> {
                     String v = et.getText().toString().trim();
                     putSetting(key, v);
                     view.setText(v);
-                    if ("port".equals(key)) { toast("端口已修改，重启服务后生效"); }
+                    if ("max_prompt_chars".equals(key)) {
+                        toast("单次输入上限已设为 " + Util.prefs(this).getInt("max_prompt_chars", 38000) + " 字符，下次请求生效");
+                    }
+                    else if ("port".equals(key)) { toast("端口已修改，重启服务后生效"); }
                     else if ("apikey".equals(key)) { toast("API Key 已修改"); }
                     refreshStats();
                 })

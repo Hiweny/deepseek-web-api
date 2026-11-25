@@ -133,40 +133,69 @@ public final class PromptBuilder {
     private static void fitChars(Result r, int maxChars) {
         String text = r.text == null ? "" : r.text;
         if (text.length() <= maxChars) return;
-        final int RESERVE = 160;                       // 省略标记预留
-        long budget = Math.max(512, maxChars - RESERVE);
+        final int RESERVE = 240;                       // 省略标记预留
+        long budget = Math.max(600, maxChars - RESERVE);
 
-        // head = 从「【系统指令】」到第一个空行（系统提示 + 工具协议），尽量完整保留，避免工具 schema 被截半
+        // head = 「【系统指令】」到第一个空行（系统提示 + 工具协议），尽量完整保留，避免工具 schema 被截半
         String head = "";
         String body = text;
         if (text.startsWith("\u3010系统指令\u3011")) {
             int cut = text.indexOf("\n\n", 6);
             if (cut > 0) { head = text.substring(0, cut); body = text.substring(cut + 2); }
         }
-        long headBudget = Math.min(head.length(), (long) Math.floor(budget * 0.45));
-        long bodyBudget = budget - headBudget;
-        if (bodyBudget < 0) bodyBudget = 0;
-
+        long headBudget = Math.min(head.length(), (long) Math.floor(budget * 0.40));
+        long bodyBudget = Math.max(0, budget - headBudget);
         String headOut = head.length() > headBudget ? head.substring(0, (int) headBudget) : head;
-        String bodyOut = body;
-        if (body.length() > bodyBudget) {
-            int keep = (int) bodyBudget;
-            int start = body.length() - keep;               // 保留尾部（最近回合）
-            int nl = body.indexOf("\n\n", start);
-            if (nl >= 0 && nl - start <= 800) start = nl + 2;
-            else { int nl2 = body.indexOf('\n', start); if (nl2 >= 0 && nl2 - start <= 240) start = nl2 + 1; }
-            if (start < 0) start = 0;
-            if (start > body.length()) start = body.length();
-            bodyOut = body.substring(start);
+
+        long tailBudget = (long) Math.floor(bodyBudget * 0.60);
+        String tailOut;
+        String midOut = "";
+        if (body.length() <= bodyBudget) {
+            tailOut = body;
+        } else {
+            int tailStart = (int) Math.max(0, body.length() - tailBudget);
+            int nl = body.indexOf("\n\n", tailStart);
+            if (nl >= 0 && nl - tailStart <= 800) tailStart = nl + 2;
+            else { int nl2 = body.indexOf('\n', tailStart); if (nl2 >= 0 && nl2 - tailStart <= 240) tailStart = nl2 + 1; }
+            tailStart = Math.min(tailStart, body.length());
+            tailOut = body.substring(tailStart);
+            String mid = body.substring(0, tailStart);
+            midOut = sampleMiddle(mid, bodyBudget - tailOut.length());
         }
-        long omitted = (head.length() - headOut.length()) + (body.length() - bodyOut.length());
+
+        long omitted = Math.max(0, text.length() - headOut.length() - midOut.length() - tailOut.length());
         StringBuilder sb = new StringBuilder();
         if (headOut.length() > 0) sb.append(headOut).append("\n\n");
-        sb.append("[上下文过长：已自动省略约 ").append(omitted).append(" 字符，仅保留系统指令与最近对话]\n\n");
-        sb.append(bodyOut);
+        if (midOut.length() > 0) {
+            sb.append(midOut).append("\n[……中间约 ").append(omitted)
+              .append(" 字符过长，已按行抽样压缩，仅保留各行要点……]\n\n");
+        } else {
+            sb.append("[上下文过长：已自动省略约 ").append(omitted)
+              .append(" 字符，仅保留系统指令与最近对话]\n\n");
+        }
+        sb.append(tailOut);
         r.text = sb.toString().trim();
         r.truncated = true;
         r.omittedChars = omitted;
+    }
+
+    /** 中段压缩：按行抽样保留骨架，而不是把中间整段丢掉（模型仍能看到每段要点）。 */
+    private static String sampleMiddle(String mid, long budget) {
+        if (budget <= 0 || mid.isEmpty()) return "";
+        if (mid.length() <= budget) return mid;
+        String[] lines = mid.split("\n");
+        int n = lines.length;
+        if (n <= 1) return mid.substring(0, (int) Math.min(mid.length(), budget));
+        int keepLines = (int) Math.max(1, budget / 80);          // 每行按 80 字符均摊
+        int step = Math.max(1, n / Math.max(1, keepLines));
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i += step) {
+            String ln = lines[i];
+            if (ln.length() > 200) ln = ln.substring(0, 200) + "…";
+            if (sb.length() + ln.length() + 1 > budget) break;
+            sb.append(ln).append('\n');
+        }
+        return sb.toString();
     }
 
     private static String buildStateless(JSONArray messages, String toolBlock, String formatBlock, Result r) {
